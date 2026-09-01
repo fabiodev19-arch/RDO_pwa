@@ -110,6 +110,7 @@
   }
   .badge.rascunho{background:var(--surface-3); color:var(--text-dim);}
   .badge.concluido{background:var(--success-bg); color:var(--success);}
+  .badge.pendente-sync{background:rgba(232,135,30,.15); color:var(--accent);}
   .rdo-card .del{
     width:26px; height:26px; border-radius:50%; border:1px solid var(--border); background:none;
     color:var(--text-dim); flex:0 0 auto; display:flex; align-items:center; justify-content:center;
@@ -304,6 +305,7 @@
   .sucesso-wrap h2{margin:0 0 8px; font-size:19px;}
   .sucesso-wrap p{margin:0 0 26px; color:var(--text-dim); font-size:13.5px; max-width:280px; line-height:1.5;}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -355,6 +357,62 @@
     operadores: ["Leandro Félix","Leandro Recalde","Cherri dos Santos","Silvanei Costa","Antônio Cleonildo","Reginaldo da Silva","Gilberto Rodrigues","Elson","Valmir","Edwilson","Luciano"]
   };
 
+  // Nomes das categorias no banco (singular) -> chave correspondente aqui no
+  // CATALOGO (plural). listar_cadastros() devolve {"cliente":[...], ...}.
+  var CATALOGO_KEY_MAP = {
+    cliente: "clientes", contrato: "contratos", tipo_estrada: "tiposEstrada",
+    equipe_frente: "equipesFrente", fazenda: "fazendas", encarregado: "encarregados",
+    supervisor: "supervisores", tecnico_arauco: "tecnicosArauco", supervisor_arauco: "supervisoresArauco",
+    trecho: "trechos", tipo_atividade: "tiposAtividade", tipo_hora_maquina: "tiposHoraMaquina",
+    equipamento: "equipamentos", operador: "operadores"
+  };
+
+  /* ======================= SUPABASE ======================= */
+  var SUPABASE_URL = "https://ogmovdwcoxfoemutqugk.supabase.co";
+  var SUPABASE_ANON_KEY = "sb_publishable_TNN3hOofPJ9YHKTS3vzg0Q_e567QIMV";
+  var BUCKET_EVIDENCIAS = "evidencias_rdo";
+  var supabaseClient = (window.supabase && window.supabase.createClient)
+    ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+    : null;
+
+  var CADASTROS_CACHE_KEY = "gtm_rdo_cadastros_cache";
+
+  // Aplica os dados vindos do banco por cima do CATALOGO (mutando o mesmo
+  // objeto, não trocando a referência -- várias partes do app guardam
+  // ponteiro pra CATALOGO.equipamentos etc., então precisa continuar sendo
+  // o mesmo objeto).
+  function aplicarCadastros(dados){
+    if (!dados) return;
+    Object.keys(CATALOGO_KEY_MAP).forEach(function(catKey){
+      var jsKey = CATALOGO_KEY_MAP[catKey];
+      if (dados[catKey] && dados[catKey].length){
+        // Muta o array existente em vez de trocar a referência -- IDENT_CAMPOS
+        // guarda um ponteiro direto pro array (ex: opts: CATALOGO.clientes)
+        // capturado uma única vez no carregamento do script; se a gente
+        // reatribuísse CATALOGO[jsKey] = novoArray, esse ponteiro antigo
+        // ficaria desatualizado para sempre.
+        var arr = CATALOGO[jsKey];
+        arr.length = 0;
+        dados[catKey].forEach(function(v){ arr.push(v); });
+      }
+    });
+  }
+  function carregarCadastrosCache(){
+    try {
+      var raw = localStorage.getItem(CADASTROS_CACHE_KEY);
+      if (raw) aplicarCadastros(JSON.parse(raw));
+    } catch(e){ /* sem cache ainda, segue com a semente fixa do CATALOGO */ }
+  }
+  function atualizarCadastrosRemoto(){
+    if (!supabaseClient) return;
+    supabaseClient.rpc("listar_cadastros").then(function(resp){
+      if (!resp || resp.error || !resp.data) return;
+      aplicarCadastros(resp.data);
+      try { localStorage.setItem(CADASTROS_CACHE_KEY, JSON.stringify(resp.data)); } catch(e){}
+      render();
+    }).catch(function(){ /* offline ou erro -- fica com o que já tem */ });
+  }
+
   var IDENT_CAMPOS = [
     { k:"cliente", l:"Cliente", t:"select", opts:CATALOGO.clientes, req:true },
     { k:"contrato", l:"Contrato", t:"select", opts:CATALOGO.contratos, req:true },
@@ -405,7 +463,14 @@
     editAtividadeIdx: null
   };
 
-  function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+  function uid(){
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    // fallback simples para navegadores muito antigos sem crypto.randomUUID
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c){
+      var r = Math.random()*16|0, v = c === "x" ? r : (r&0x3|0x8);
+      return v.toString(16);
+    });
+  }
 
   /* ======================= COMPRESSÃO DE FOTOS ======================= */
   // Fotos de câmera saem do aparelho com 3000-4000px de lado e vários MB cada.
@@ -463,6 +528,7 @@
       atividades: [],
       gps: null,
       status:"rascunho",
+      syncStatus: null, // null | "pendente" | "sincronizado" -- só importa quando status=concluido
       criadoEm: new Date().toISOString(),
       concluidoEm: null
     };
@@ -732,7 +798,13 @@
     } else if (App.tela === "secoes" && r){
       titulo = r.fazenda || "Novo relatório";
       sub = r.data ? formatarData(r.data) : "Preencha os dados";
-      pillHtml = '<span class="badge '+(r.status==="concluido"?"concluido":"rascunho")+'">'+(r.status==="concluido"?"Concluído":"Rascunho em aberto")+'</span>';
+      if (r.status !== "concluido"){
+        pillHtml = '<span class="badge rascunho">Rascunho em aberto</span>';
+      } else if (r.syncStatus === "sincronizado"){
+        pillHtml = '<span class="badge concluido">Sincronizado</span>';
+      } else {
+        pillHtml = '<span class="badge pendente-sync">Aguardando sincronização</span>';
+      }
     } else if (App.tela === "secao"){
       titulo = nomeSecao(App.secaoAtiva);
       sub = (r && r.fazenda) ? r.fazenda : "";
@@ -899,14 +971,21 @@
         '<p>Toque em "Novo Relatório" para começar a preencher o RDO da frente de trabalho.</p></div>';
     }
     var ordenados = App.relatorios.slice().sort(function(a,b){ return (b.criadoEm||"").localeCompare(a.criadoEm||""); });
-    var pendentes = ordenados.filter(function(r){ return r.status === "concluido"; }).length;
+    var pendentes = ordenados.filter(function(r){ return r.status === "concluido" && r.syncStatus !== "sincronizado"; }).length;
     var html = '<div class="container">';
     if (pendentes){
-      html += '<p class="helper-text" style="margin-top:0">'+pendentes+' relatório(s) concluído(s) aguardando sincronização.</p>';
+      html += '<p class="helper-text" style="margin-top:0">'+pendentes+' relatório(s) aguardando sincronização.</p>';
     }
     html += ordenados.map(function(r){
       var faz = r.fazenda || "Fazenda não informada";
-      var badge = r.status === "concluido" ? '<span class="badge concluido">Concluído</span>' : '<span class="badge rascunho">Rascunho em aberto</span>';
+      var badge;
+      if (r.status !== "concluido"){
+        badge = '<span class="badge rascunho">Rascunho em aberto</span>';
+      } else if (r.syncStatus === "sincronizado"){
+        badge = '<span class="badge concluido">Sincronizado</span>';
+      } else {
+        badge = '<span class="badge pendente-sync">Aguardando sincronização</span>';
+      }
       var prog = progressoGeral(r);
       var sub = r.cliente ? r.cliente : "Cliente não informado";
       if (r.data) sub += " · " + formatarData(r.data);
@@ -1162,7 +1241,7 @@
     var btnAdd = document.getElementById("btn-add-ativ");
     if (btnAdd) btnAdd.onclick = function(){
       App.editAtividadeIdx = "novo";
-      App._novaAtividade = { tipo_atividade:"", equipamentos:[] };
+      App._novaAtividade = { id: uid(), tipo_atividade:"", equipamentos:[] };
       App.tela = "atividade";
       App._atividadeSnapshot = snapshotAtividade(App._novaAtividade);
       render();
@@ -1197,7 +1276,7 @@
 
   function tentarConcluir(r){
     if (r.status === "concluido"){
-      r.status = "rascunho"; persistir(r); render(); showToast("Relatório reaberto para edição.");
+      r.status = "rascunho"; r.syncStatus = null; persistir(r); render(); showToast("Relatório reaberto para edição.");
       return;
     }
     var faltando = [];
@@ -1227,9 +1306,105 @@
   function concluirRelatorio(r){
     r.status = "concluido";
     r.concluidoEm = new Date().toISOString();
+    r.syncStatus = "pendente";
     persistir(r);
     App.tela = "sucesso";
     render();
+    tentarSincronizar(r);
+  }
+
+  /* ======================= SINCRONIZAÇÃO COM O SUPABASE ======================= */
+  // Nunca finge sucesso: se a sincronização falhar (sem internet, erro do
+  // servidor), o relatório fica marcado "pendente" e o app tenta de novo
+  // sozinho quando a conexão voltar -- mesmo comportamento do painel de
+  // biomassa. O envio das fotos acontece antes do RPC, pra já mandar o
+  // storage_path de cada uma junto com o relatório.
+
+  function caminhoFoto(r, atividadeId, foto){
+    return r.id + "/" + atividadeId + "/" + foto.id + ".jpg";
+  }
+
+  function uploadFotosPendentes(r){
+    if (!supabaseClient) return Promise.resolve();
+    var envios = [];
+    r.atividades.forEach(function(a){
+      (a.fotos || []).forEach(function(f){
+        if (f.storagePath || !f.blob) return; // já enviada, ou sem blob (reaberta sem o binário)
+        var caminho = caminhoFoto(r, a.id, f);
+        envios.push(
+          supabaseClient.storage.from(BUCKET_EVIDENCIAS)
+            .upload(caminho, f.blob, { upsert: true, contentType: "image/jpeg" })
+            .then(function(resp){
+              if (!resp.error) f.storagePath = caminho;
+            })
+        );
+      });
+    });
+    return Promise.all(envios);
+  }
+
+  function construirPayloadRelatorio(r){
+    return {
+      uuid_dispositivo: r.id,
+      empresa: r.empresa,
+      cliente: r.cliente, contrato: r.contrato, faena: r.faena,
+      tipo_estrada: r.tipo_estrada, equipe_frente: r.equipe_frente, fazenda: r.fazenda,
+      data: r.data, encarregado: r.encarregado, supervisor: r.supervisor,
+      tecnico_arauco: r.tecnico_arauco, supervisor_arauco: r.supervisor_arauco,
+      gps: r.gps ? { lat: r.gps.lat, lng: r.gps.lng, precisao: r.gps.precisao, capturadoEm: r.gps.capturadoEm } : null,
+      criadoEm: r.criadoEm, concluidoEm: r.concluidoEm,
+      atividades: r.atividades.map(function(a){
+        return {
+          tipo_atividade: a.tipo_atividade,
+          comprimento_m: a.comprimento_m, largura_m: a.largura_m, profundidade_cm: a.profundidade_cm,
+          dmt_km_inicial: a.dmt_km_inicial, dmt_km_final: a.dmt_km_final,
+          trecho: a.trecho, tipo: a.tipo, observacao: a.observacao,
+          equipamentos: (a.equipamentos || []).map(function(e){ return { equipamento: e.equipamento, operador: e.operador }; }),
+          maquinas: (a.maquinas || []).map(function(m){ return { equipamento: m.equipamento, operador: m.operador, hora_inicial: m.hora_inicial, hora_final: m.hora_final }; }),
+          fotos: (a.fotos || []).filter(function(f){ return f.storagePath; }).map(function(f){ return { storage_path: f.storagePath }; })
+        };
+      })
+    };
+  }
+
+  function sincronizarRelatorio(r){
+    if (!supabaseClient) return Promise.resolve(false);
+    return uploadFotosPendentes(r).then(function(){
+      persistir(r); // grava os storagePath que as fotos ganharam, mesmo se o RPC falhar depois
+      var payload = construirPayloadRelatorio(r);
+      return supabaseClient.rpc("sincronizar_relatorio_rdo", { p_payload: payload });
+    }).then(function(resp){
+      if (!resp || resp.error){
+        console.warn("Falha ao sincronizar relatório:", resp && resp.error && resp.error.message);
+        return false;
+      }
+      return true;
+    }).catch(function(err){
+      console.warn("Falha ao sincronizar relatório:", err);
+      return false;
+    });
+  }
+
+  var _sincronizando = {}; // evita reenviar o mesmo relatório 2x em paralelo
+  function tentarSincronizar(r){
+    if (!supabaseClient || !navigator.onLine) return;
+    if (r.status !== "concluido" || r.syncStatus === "sincronizado") return;
+    if (_sincronizando[r.id]) return;
+    _sincronizando[r.id] = true;
+    sincronizarRelatorio(r).then(function(ok){
+      delete _sincronizando[r.id];
+      if (ok){
+        r.syncStatus = "sincronizado";
+        r.sincronizadoEm = new Date().toISOString();
+        persistir(r);
+        render();
+      }
+    });
+  }
+  function tentarSincronizarTodosPendentes(){
+    App.relatorios
+      .filter(function(r){ return r.status === "concluido" && r.syncStatus !== "sincronizado"; })
+      .forEach(tentarSincronizar);
   }
 
   /* ======================= TELA: ATIVIDADE ======================= */
@@ -1316,7 +1491,7 @@
     var selTipo = document.getElementById("sel-tipo-ativ");
     if (selTipo) selTipo.onclick = function(){
       openSheet("Tipo de atividade", CATALOGO.tiposAtividade, a.tipo_atividade, function(v){
-        var novo = { tipo_atividade: v, equipamentos: [], maquinas: [], fotos: (a.fotos || []) };
+        var novo = { id: a.id || uid(), tipo_atividade: v, equipamentos: [], maquinas: [], fotos: (a.fotos || []) };
         if (App.editAtividadeIdx === "novo") App._novaAtividade = novo;
         else r.atividades[App.editAtividadeIdx] = novo;
         render();
@@ -1427,7 +1602,7 @@
         blobs.forEach(function(blob){
           var url = "";
           try { url = URL.createObjectURL(blob); } catch(e){}
-          a.fotos.push({ id: uid(), blob: blob, url: url });
+          a.fotos.push({ id: uid(), blob: blob, url: url, storagePath: null });
         });
         render();
       });
@@ -1519,7 +1694,10 @@
   }
 
   /* ======================= ONLINE / OFFLINE ======================= */
-  window.addEventListener("online", render);
+  window.addEventListener("online", function(){
+    render();
+    tentarSincronizarTodosPendentes();
+  });
   window.addEventListener("offline", render);
 
   /* ======================= INIT ======================= */
@@ -1540,7 +1718,10 @@
     regenerarUrlsFotos(lista);
     App.relatorios = lista;
     render();
+    if (navigator.onLine) tentarSincronizarTodosPendentes();
   });
+  carregarCadastrosCache();
+  atualizarCadastrosRemoto();
 
   if ("serviceWorker" in navigator){
     window.addEventListener("load", function(){
