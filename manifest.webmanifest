@@ -1,0 +1,17 @@
+{
+  "name": "GTM — Relatório Diário de Obra",
+  "short_name": "GTM RDO",
+  "description": "Aplicativo de campo para preenchimento offline do Relatório Diário de Obra (RDO) da GTM Prestadora de Serviços.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "id": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0B1620",
+  "theme_color": "#123F5C",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
