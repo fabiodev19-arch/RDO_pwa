@@ -294,7 +294,7 @@
   }
   .toast.show{opacity:1;}
 
-  /* ---------- Sucesso ---------- */
+  /* ---------- Sucesso / resultado do envio ---------- */
   .sucesso-wrap{display:flex; flex-direction:column; align-items:center; justify-content:center;
     height:100%; text-align:center; padding:30px;}
   .sucesso-check{
@@ -302,6 +302,11 @@
     display:flex; align-items:center; justify-content:center; margin-bottom:18px;
   }
   .sucesso-check svg{width:38px; height:38px;}
+  .sucesso-check.estado-enviando{background:var(--surface-3); color:var(--brand);}
+  html[data-theme="light"] .sucesso-check.estado-enviando{color:var(--brand-dark);}
+  .sucesso-check.estado-enviando svg{animation:girar 1s linear infinite;}
+  @keyframes girar{ from{transform:rotate(0deg);} to{transform:rotate(360deg);} }
+  .sucesso-check.estado-pendente{background:rgba(232,135,30,.15); color:var(--accent);}
   .sucesso-wrap h2{margin:0 0 8px; font-size:19px;}
   .sucesso-wrap p{margin:0 0 26px; color:var(--text-dim); font-size:13.5px; max-width:280px; line-height:1.5;}
 </style>
@@ -460,6 +465,7 @@
     tela: "lista",        // lista | secoes | secao | atividade | sucesso
     atualId: null,
     secaoAtiva: null,     // ident | atividades (quando tela === "secao")
+    sucessoEstado: null,  // enviando | sincronizado | pendente (quando tela === "sucesso")
     editAtividadeIdx: null
   };
 
@@ -528,7 +534,8 @@
       atividades: [],
       gps: null,
       status:"rascunho",
-      syncStatus: null, // null | "pendente" | "sincronizado" -- só importa quando status=concluido
+      syncStatus: null, // null | "pendente" | "sincronizado" -- só pra exibição, ver relatorioSincronizado()
+      rpcSincronizado: false, // true assim que o RPC de texto tiver sucesso alguma vez
       criadoEm: new Date().toISOString(),
       concluidoEm: null
     };
@@ -783,6 +790,8 @@
   function cameraIcon(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><circle cx="12" cy="14" r="3.5"/></svg>'; }
   function imageIcon(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 16.5l-5.3-5.3a2 2 0 0 0-2.8 0L4 20"/></svg>'; }
   function pinIcon(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21s7-6.6 7-12a7 7 0 1 0-14 0c0 5.4 7 12 7 12Z"/><circle cx="12" cy="9" r="2.4"/></svg>'; }
+  function spinnerIcon(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2a10 10 0 0 1 10 10"/></svg>'; }
+  function clockIcon(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>'; }
 
   /* ======================= HEADER ======================= */
   function statusPillHtml(){
@@ -800,7 +809,7 @@
       sub = r.data ? formatarData(r.data) : "Preencha os dados";
       if (r.status !== "concluido"){
         pillHtml = '<span class="badge rascunho">Rascunho em aberto</span>';
-      } else if (r.syncStatus === "sincronizado"){
+      } else if (!relatorioPendente(r)){
         pillHtml = '<span class="badge concluido">Sincronizado</span>';
       } else {
         pillHtml = '<span class="badge pendente-sync">Aguardando sincronização</span>';
@@ -971,7 +980,7 @@
         '<p>Toque em "Novo Relatório" para começar a preencher o RDO da frente de trabalho.</p></div>';
     }
     var ordenados = App.relatorios.slice().sort(function(a,b){ return (b.criadoEm||"").localeCompare(a.criadoEm||""); });
-    var pendentes = ordenados.filter(function(r){ return r.status === "concluido" && r.syncStatus !== "sincronizado"; }).length;
+    var pendentes = ordenados.filter(relatorioPendente).length;
     var html = '<div class="container">';
     if (pendentes){
       html += '<p class="helper-text" style="margin-top:0">'+pendentes+' relatório(s) aguardando sincronização.</p>';
@@ -981,7 +990,7 @@
       var badge;
       if (r.status !== "concluido"){
         badge = '<span class="badge rascunho">Rascunho em aberto</span>';
-      } else if (r.syncStatus === "sincronizado"){
+      } else if (!relatorioPendente(r)){
         badge = '<span class="badge concluido">Sincronizado</span>';
       } else {
         badge = '<span class="badge pendente-sync">Aguardando sincronização</span>';
@@ -1276,7 +1285,15 @@
 
   function tentarConcluir(r){
     if (r.status === "concluido"){
-      r.status = "rascunho"; r.syncStatus = null; persistir(r); render(); showToast("Relatório reaberto para edição.");
+      showConfirm(
+        "Reabrir relatório?",
+        "Ele volta a ser um rascunho editável e sai do estado sincronizado até ser concluído de novo.",
+        "Reabrir",
+        function(){
+          r.status = "rascunho"; r.syncStatus = null; r.rpcSincronizado = false;
+          persistir(r); render(); showToast("Relatório reaberto para edição.");
+        }
+      );
       return;
     }
     var faltando = [];
@@ -1309,8 +1326,19 @@
     r.syncStatus = "pendente";
     persistir(r);
     App.tela = "sucesso";
+    App.sucessoEstado = (supabaseClient && navigator.onLine) ? "enviando" : "pendente";
     render();
-    tentarSincronizar(r);
+
+    if (supabaseClient && navigator.onLine){
+      tentarSincronizar(r, function(){
+        // só atualiza a mensagem da tela de sucesso se o usuário ainda
+        // estiver olhando o resultado deste mesmo relatório
+        if (App.tela === "sucesso" && App.atualId === r.id){
+          App.sucessoEstado = relatorioSincronizado(r) ? "sincronizado" : "pendente";
+          render();
+        }
+      });
+    }
   }
 
   /* ======================= SINCRONIZAÇÃO COM O SUPABASE ======================= */
@@ -1335,12 +1363,37 @@
           supabaseClient.storage.from(BUCKET_EVIDENCIAS)
             .upload(caminho, f.blob, { upsert: true, contentType: "image/jpeg" })
             .then(function(resp){
-              if (!resp.error) f.storagePath = caminho;
+              if (resp.error){
+                console.warn("Falha ao enviar foto para o Storage:", resp.error.message || resp.error);
+              } else {
+                f.storagePath = caminho;
+              }
+            })
+            .catch(function(err){
+              console.warn("Falha ao enviar foto para o Storage:", err);
             })
         );
       });
     });
     return Promise.all(envios);
+  }
+
+  // rpcSincronizado é um flag monotônico (só vira true, nunca volta sozinho)
+  // que registra se o RPC do texto já teve sucesso alguma vez para os dados
+  // atuais. "Sincronizado de verdade" exige ISSO **e** toda foto com
+  // storagePath -- checando os dois de forma independente, sem se basear
+  // no próprio resultado anterior (syncStatus), que criava uma referência
+  // circular: uma vez "pendente", nunca mais recalculava certo sozinho.
+  function todasFotosEnviadas(r){
+    return r.atividades.every(function(a){
+      return (a.fotos || []).every(function(f){ return !f.blob || f.storagePath; });
+    });
+  }
+  function relatorioSincronizado(r){
+    return r.status === "concluido" && r.rpcSincronizado === true && todasFotosEnviadas(r);
+  }
+  function relatorioPendente(r){
+    return r.status === "concluido" && !relatorioSincronizado(r);
   }
 
   function construirPayloadRelatorio(r){
@@ -1386,25 +1439,25 @@
   }
 
   var _sincronizando = {}; // evita reenviar o mesmo relatório 2x em paralelo
-  function tentarSincronizar(r){
-    if (!supabaseClient || !navigator.onLine) return;
-    if (r.status !== "concluido" || r.syncStatus === "sincronizado") return;
-    if (_sincronizando[r.id]) return;
+  function tentarSincronizar(r, onDone){
+    if (!supabaseClient || !navigator.onLine){ if (onDone) onDone(); return; }
+    if (!relatorioPendente(r)){ if (onDone) onDone(); return; }
+    if (_sincronizando[r.id]) return; // já tem uma tentativa rodando pra esse relatório
     _sincronizando[r.id] = true;
     sincronizarRelatorio(r).then(function(ok){
       delete _sincronizando[r.id];
       if (ok){
-        r.syncStatus = "sincronizado";
+        r.rpcSincronizado = true;
+        r.syncStatus = relatorioSincronizado(r) ? "sincronizado" : "pendente";
         r.sincronizadoEm = new Date().toISOString();
         persistir(r);
         render();
       }
+      if (onDone) onDone();
     });
   }
   function tentarSincronizarTodosPendentes(){
-    App.relatorios
-      .filter(function(r){ return r.status === "concluido" && r.syncStatus !== "sincronizado"; })
-      .forEach(tentarSincronizar);
+    App.relatorios.filter(relatorioPendente).forEach(tentarSincronizar);
   }
 
   /* ======================= TELA: ATIVIDADE ======================= */
@@ -1680,16 +1733,33 @@
 
   /* ======================= TELA: SUCESSO ======================= */
   function renderTelaSucesso(){
+    var estado = App.sucessoEstado || "pendente";
+    if (estado === "enviando"){
+      return '<div class="sucesso-wrap">'+
+        '<div class="sucesso-check estado-enviando">'+spinnerIcon()+'</div>'+
+        '<h2>Enviando relatório...</h2>'+
+        '<p>Subindo fotos e sincronizando com o servidor. Pode continuar usando o app normalmente.</p>'+
+        '<button class="btn btn-primary" id="btn-voltar-lista" style="max-width:220px">Voltar para a lista</button>'+
+      '</div>';
+    }
+    if (estado === "sincronizado"){
+      return '<div class="sucesso-wrap">'+
+        '<div class="sucesso-check">'+checkIcon()+'</div>'+
+        '<h2>Relatório enviado</h2>'+
+        '<p>Sincronizado com sucesso no servidor.</p>'+
+        '<button class="btn btn-primary" id="btn-voltar-lista" style="max-width:220px">Voltar para a lista</button>'+
+      '</div>';
+    }
     return '<div class="sucesso-wrap">'+
-      '<div class="sucesso-check">'+checkIcon()+'</div>'+
-      '<h2>Relatório concluído</h2>'+
-      '<p>O RDO foi salvo neste aparelho e entra na fila de sincronização assim que houver conexão com o servidor.</p>'+
+      '<div class="sucesso-check estado-pendente">'+clockIcon()+'</div>'+
+      '<h2>Relatório salvo</h2>'+
+      '<p>Ainda não foi possível sincronizar com o servidor. Fica salvo neste aparelho e é enviado automaticamente assim que houver conexão.</p>'+
       '<button class="btn btn-primary" id="btn-voltar-lista" style="max-width:220px">Voltar para a lista</button>'+
     '</div>';
   }
   function ligarEventosSucesso(){
     document.getElementById("btn-voltar-lista").onclick = function(){
-      App.atualId = null; App.tela = "lista"; render();
+      App.atualId = null; App.sucessoEstado = null; App.tela = "lista"; render();
     };
   }
 
