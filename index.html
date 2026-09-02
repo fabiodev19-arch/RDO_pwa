@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#123F5C">
 <meta name="description" content="Relatório Diário de Obra da GTM Prestadora de Serviços — preenchimento offline em campo.">
 <link rel="manifest" href="./manifest.webmanifest">
-<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
@@ -163,6 +163,15 @@
     color:var(--text-dim); margin:20px 0 10px;}
   .section-title:first-child{margin-top:0;}
   .helper-text{font-size:12px; color:var(--text-dim); margin:-6px 0 14px; line-height:1.5;}
+  .sync-agora-row{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    font-size:12px; color:var(--text-dim); margin:-6px 0 14px; line-height:1.5;
+  }
+  .btn-sync-agora{
+    background:none; border:none; color:var(--brand); font-weight:700; font-size:12px;
+    padding:2px 0; flex:0 0 auto; white-space:nowrap; cursor:pointer;
+  }
+  html[data-theme="light"] .btn-sync-agora{color:var(--brand-dark);}
 
   /* ---------- Atividade cards ---------- */
   .ativ-card{
@@ -983,7 +992,10 @@
     var pendentes = ordenados.filter(relatorioPendente).length;
     var html = '<div class="container">';
     if (pendentes){
-      html += '<p class="helper-text" style="margin-top:0">'+pendentes+' relatório(s) aguardando sincronização.</p>';
+      html += '<div class="sync-agora-row">'+
+        '<span>'+pendentes+' relatório(s) aguardando sincronização.</span>'+
+        '<button class="btn-sync-agora" id="btn-sync-agora">Tentar agora</button>'+
+      '</div>';
     }
     html += ordenados.map(function(r){
       var faz = r.fazenda || "Fazenda não informada";
@@ -1011,6 +1023,21 @@
     return html;
   }
   function ligarEventosLista(){
+    var btnSyncAgora = document.getElementById("btn-sync-agora");
+    if (btnSyncAgora) btnSyncAgora.onclick = function(){
+      if (!supabaseClient){
+        showToast("Não foi possível conectar ao servidor (recarregue o app).");
+        return;
+      }
+      if (!navigator.onLine){
+        showToast("Sem conexão com a internet.");
+        return;
+      }
+      showToast("Sincronizando...");
+      tentarSincronizarTodosPendentes().then(function(resultados){
+        showToast(resultados.every(Boolean) ? "Sincronização concluída." : "Alguns relatórios ainda não sincronizaram.");
+      });
+    };
     document.getElementById("btn-novo").onclick = function(){
       var r = novoRelatorioObj();
       App.relatorios.push(r);
@@ -1094,7 +1121,16 @@
     var r = relatorioAtual();
     document.querySelectorAll(".secao-row").forEach(function(row){
       row.onclick = function(){
-        App.secaoAtiva = row.getAttribute("data-secao");
+        var secaoAlvo = row.getAttribute("data-secao");
+        if (r.status === "concluido"){
+          confirmarReabrir(r, function(){
+            App.secaoAtiva = secaoAlvo;
+            App.tela = "secao";
+            render();
+          });
+          return;
+        }
+        App.secaoAtiva = secaoAlvo;
         App.tela = "secao";
         render();
       };
@@ -1283,17 +1319,27 @@
     if (btnVoltarSecoes) btnVoltarSecoes.onclick = voltar;
   }
 
+  // Pede confirmação e só reabre (volta a rascunho, sai do estado
+  // sincronizado) se o usuário confirmar. aoConfirmar roda depois de reabrir
+  // de verdade -- usado tanto pelo botão "Reabrir" quanto para bloquear a
+  // entrada direto numa seção de um relatório já concluído.
+  function confirmarReabrir(r, aoConfirmar){
+    showConfirm(
+      "Reabrir relatório?",
+      "Ele volta a ser um rascunho editável e sai do estado sincronizado até ser concluído de novo.",
+      "Reabrir",
+      function(){
+        r.status = "rascunho"; r.syncStatus = null; r.rpcSincronizado = false;
+        persistir(r);
+        showToast("Relatório reaberto para edição.");
+        if (aoConfirmar) aoConfirmar();
+      }
+    );
+  }
+
   function tentarConcluir(r){
     if (r.status === "concluido"){
-      showConfirm(
-        "Reabrir relatório?",
-        "Ele volta a ser um rascunho editável e sai do estado sincronizado até ser concluído de novo.",
-        "Reabrir",
-        function(){
-          r.status = "rascunho"; r.syncStatus = null; r.rpcSincronizado = false;
-          persistir(r); render(); showToast("Relatório reaberto para edição.");
-        }
-      );
+      confirmarReabrir(r, render);
       return;
     }
     var faltando = [];
@@ -1440,11 +1486,22 @@
 
   var _sincronizando = {}; // evita reenviar o mesmo relatório 2x em paralelo
   function tentarSincronizar(r, onDone){
-    if (!supabaseClient || !navigator.onLine){ if (onDone) onDone(); return; }
-    if (!relatorioPendente(r)){ if (onDone) onDone(); return; }
-    if (_sincronizando[r.id]) return; // já tem uma tentativa rodando pra esse relatório
+    if (!supabaseClient){
+      console.warn("Sincronização não tentada: cliente Supabase não inicializado (o script @supabase/supabase-js não carregou).");
+      if (onDone) onDone();
+      return Promise.resolve(false);
+    }
+    if (!navigator.onLine){
+      if (onDone) onDone();
+      return Promise.resolve(false);
+    }
+    if (!relatorioPendente(r)){
+      if (onDone) onDone();
+      return Promise.resolve(true);
+    }
+    if (_sincronizando[r.id]) return Promise.resolve(false); // já tem uma tentativa rodando pra esse relatório
     _sincronizando[r.id] = true;
-    sincronizarRelatorio(r).then(function(ok){
+    return sincronizarRelatorio(r).then(function(ok){
       delete _sincronizando[r.id];
       if (ok){
         r.rpcSincronizado = true;
@@ -1454,10 +1511,11 @@
         render();
       }
       if (onDone) onDone();
+      return ok;
     });
   }
   function tentarSincronizarTodosPendentes(){
-    App.relatorios.filter(relatorioPendente).forEach(tentarSincronizar);
+    return Promise.all(App.relatorios.filter(relatorioPendente).map(function(r){ return tentarSincronizar(r); }));
   }
 
   /* ======================= TELA: ATIVIDADE ======================= */
