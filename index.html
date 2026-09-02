@@ -212,6 +212,19 @@
   }
   .rm-maquina svg{width:13px; height:13px;}
 
+  .maquina-detalhada-card{
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+    padding:12px; margin-bottom:9px;
+  }
+  .maquina-detalhada-card .row-2{margin-bottom:9px;}
+  .maquina-detalhada-card .campo-solo{
+    display:block; width:100%; padding:12px 13px; border-radius:var(--radius-sm); border:1px solid var(--border);
+    background:var(--surface-2); color:var(--text); font-size:14.5px; margin-bottom:9px;
+  }
+  .maquina-detalhada-card textarea.campo-solo{min-height:56px; resize:vertical; line-height:1.4; font-family:inherit;}
+  .maquina-detalhada-card .campo-solo:focus{outline:none; border-color:var(--brand);}
+  .maquina-detalhada-card .campo-solo::placeholder{color:var(--text-dim);}
+
   /* ---------- Fotos de evidência ---------- */
   .foto-grid{display:flex; flex-wrap:wrap; gap:9px; margin-bottom:8px;}
   .foto-thumb{width:76px; height:76px; border-radius:10px; overflow:hidden; position:relative;
@@ -365,7 +378,7 @@
     tecnicosArauco: ["Edwilson"],
     supervisoresArauco: ["Luciano"],
     trechos: ["CAP-05","106"],
-    tiposAtividade: ["Construção de Aterro","Limpeza de Camada Vegetal","Carregamento de Material","Transporte de Material","Hora Máquina Trabalhada"],
+    tiposAtividade: ["Construção de Aterro","Limpeza de Camada Vegetal","Carregamento de Material","Transporte de Material","Hora Máquina Trabalhada","Construção de Mini Curva","Abertura de Estrada","Patrolamento"],
     tiposHoraMaquina: ["Carregamento","Transporte","Deslocamento"],
     equipamentos: ["ESH-18","MN-16","PC-26-03","RC-09","CP-03","CB-20","CB-22"],
     operadores: ["Leandro Félix","Leandro Recalde","Cherri dos Santos","Silvanei Costa","Antônio Cleonildo","Reginaldo da Silva","Gilberto Rodrigues","Elson","Valmir","Edwilson","Luciano"]
@@ -427,6 +440,64 @@
     }).catch(function(){ /* offline ou erro -- fica com o que já tem */ });
   }
 
+  /* ======================= REGRAS DE NEGÓCIO (configuráveis no painel) ===
+     Mesmo princípio dos cadastros: semente fixa aqui garante que o app
+     funciona offline mesmo antes de nunca ter sincronizado, e o painel
+     pode sobrescrever tudo isso depois via listar_regras() -- sem precisar
+     mexer em código pra adicionar atividade nova ou mudar obrigatoriedade
+     por cliente. */
+  var REGRAS = {
+    formulario_atividade: {
+      "Hora Máquina Trabalhada": "hora_maquina",
+      "Construção de Mini Curva": "maquinas_detalhado",
+      "Abertura de Estrada": "maquinas_detalhado",
+      "Patrolamento": "maquinas_detalhado"
+    },
+    campo_obrigatorio: {}
+  };
+  var REGRAS_CACHE_KEY = "gtm_rdo_regras_cache";
+
+  function aplicarRegras(dados){
+    if (!dados) return;
+    Object.keys(dados).forEach(function(tipoRegra){
+      if (!REGRAS[tipoRegra]) REGRAS[tipoRegra] = {};
+      var alvo = REGRAS[tipoRegra];
+      Object.keys(alvo).forEach(function(k){ delete alvo[k]; }); // muta, não substitui
+      Object.keys(dados[tipoRegra]).forEach(function(k){ alvo[k] = dados[tipoRegra][k]; });
+    });
+  }
+  function carregarRegrasCache(){
+    try {
+      var raw = localStorage.getItem(REGRAS_CACHE_KEY);
+      if (raw) aplicarRegras(JSON.parse(raw));
+    } catch(e){ /* sem cache ainda, segue com a semente fixa */ }
+  }
+  function atualizarRegrasRemoto(){
+    if (!supabaseClient) return;
+    supabaseClient.rpc("listar_regras").then(function(resp){
+      if (!resp || resp.error || !resp.data) return;
+      aplicarRegras(resp.data);
+      try { localStorage.setItem(REGRAS_CACHE_KEY, JSON.stringify(resp.data)); } catch(e){}
+      render();
+    }).catch(function(){});
+  }
+  // Qual template de formulário uma atividade usa. "padrao" quando não há
+  // regra nenhuma (é o caso das atividades de obra "de sempre").
+  function formularioDaAtividade(tipo){
+    if (REGRAS.formulario_atividade && REGRAS.formulario_atividade[tipo]) return REGRAS.formulario_atividade[tipo];
+    return "padrao";
+  }
+  // Obrigatoriedade de um campo, configurável por cliente (ex: "Suzano:UP").
+  // Sem regra configurada -> obrigatório por padrão (mais seguro exigir de
+  // mais do que deixar passar um campo importante em branco).
+  function campoObrigatorioPara(cliente, campo){
+    var chave = cliente + ":" + campo;
+    if (REGRAS.campo_obrigatorio && Object.prototype.hasOwnProperty.call(REGRAS.campo_obrigatorio, chave)){
+      return !!REGRAS.campo_obrigatorio[chave];
+    }
+    return true;
+  }
+
   var IDENT_CAMPOS = [
     { k:"cliente", l:"Cliente", t:"select", opts:CATALOGO.clientes, req:true },
     { k:"contrato", l:"Contrato", t:"select", opts:CATALOGO.contratos, req:true },
@@ -441,19 +512,26 @@
     { k:"supervisor_arauco", l:"Supervisor Arauco", t:"select", opts:CATALOGO.supervisoresArauco, req:true }
   ];
 
-  // Campos "comuns" de cada atividade. Para Hora Máquina Trabalhada, tipo e
-  // observação são compartilhados pela atividade inteira; cada máquina que
-  // participou entra na lista "maquinas" (ver renderTelaAtividade), com hora
-  // inicial/final e equipamento/operador PRÓPRIOS de cada uma — é assim que
-  // era no relatório em texto original: uma atividade, várias máquinas, cada
-  // uma com seu par de horas.
+  // Campos "comuns" de cada atividade, de acordo com o template configurado
+  // em REGRAS.formulario_atividade (ver formularioDaAtividade). Cada
+  // template tem sua lista repetível própria, tratada à parte em
+  // renderTelaAtividade (equipamentos / maquinas / maquinas detalhadas).
   function camposAtividade(tipo){
-    if (tipo === "Hora Máquina Trabalhada"){
+    var formulario = formularioDaAtividade(tipo);
+
+    if (formulario === "hora_maquina"){
       return [
         { k:"tipo", l:"Tipo", t:"select-tipo-hm", req:true },
         { k:"observacao", l:"Observação (complemento do tipo)", t:"textarea", req:true, ph:"Ex: da fazenda Doce Moranga para a fazenda Elo Dourado 2" }
       ];
     }
+
+    if (formulario === "maquinas_detalhado"){
+      return [
+        { k:"data_execucao", l:"Data", t:"date", req:true }
+      ];
+    }
+
     var campos = [
       { k:"comprimento_m", l:"Comprimento (m)", t:"number", req:true },
       { k:"largura_m", l:"Largura (m)", t:"number", req:true },
@@ -1211,13 +1289,22 @@
 
   function resumoAtividade(a){
     var fotoTxt = (a.fotos && a.fotos.length) ? a.fotos.length+" foto"+(a.fotos.length>1?"s":"") : null;
-    if (a.tipo_atividade === "Hora Máquina Trabalhada"){
+    var formulario = formularioDaAtividade(a.tipo_atividade);
+    if (formulario === "hora_maquina"){
       var partes = [];
       if (a.tipo) partes.push(a.tipo);
       var qtdMaq = (a.maquinas||[]).length;
       if (qtdMaq) partes.push(qtdMaq+" máquina"+(qtdMaq>1?"s":""));
       if (fotoTxt) partes.push(fotoTxt);
       return partes.join(" · ") || "Toque para preencher";
+    }
+    if (formulario === "maquinas_detalhado"){
+      var partesMD = [];
+      if (a.data_execucao) partesMD.push(formatarData(a.data_execucao));
+      var qtdEq = (a.maquinas||[]).length;
+      if (qtdEq) partesMD.push(qtdEq+" equip."+(qtdEq>1?"":""));
+      if (fotoTxt) partesMD.push(fotoTxt);
+      return partesMD.join(" · ") || "Toque para preencher";
     }
     var partes2 = [];
     if (a.trecho) partes2.push("Trecho "+a.trecho);
@@ -1465,13 +1552,24 @@
       gps: r.gps ? { lat: r.gps.lat, lng: r.gps.lng, precisao: r.gps.precisao, capturadoEm: r.gps.capturadoEm } : null,
       criadoEm: r.criadoEm, concluidoEm: r.concluidoEm,
       atividades: r.atividades.map(function(a){
+        var formulario = formularioDaAtividade(a.tipo_atividade);
+        var maquinasPayload = (a.maquinas || []).map(function(m){
+          var dados = {};
+          if (formulario === "hora_maquina"){
+            dados = { hora_inicial: m.hora_inicial, hora_final: m.hora_final };
+          } else if (formulario === "maquinas_detalhado"){
+            dados = { up: m.up, trecho: m.trecho, quantidade: m.quantidade, observacao: m.observacao };
+          }
+          return { equipamento: m.equipamento, operador: m.operador, dados: dados };
+        });
         return {
           tipo_atividade: a.tipo_atividade,
           comprimento_m: a.comprimento_m, largura_m: a.largura_m, profundidade_cm: a.profundidade_cm,
           dmt_km_inicial: a.dmt_km_inicial, dmt_km_final: a.dmt_km_final,
           trecho: a.trecho, tipo: a.tipo, observacao: a.observacao,
+          data_execucao: a.data_execucao || null,
           equipamentos: (a.equipamentos || []).map(function(e){ return { equipamento: e.equipamento, operador: e.operador }; }),
-          maquinas: (a.maquinas || []).map(function(m){ return { equipamento: m.equipamento, operador: m.operador, hora_inicial: m.hora_inicial, hora_final: m.hora_final }; }),
+          maquinas: maquinasPayload,
           fotos: (a.fotos || []).filter(function(f){ return f.storagePath; }).map(function(f){ return { storage_path: f.storagePath }; })
         };
       })
@@ -1539,12 +1637,15 @@
   function renderTelaAtividade(){
     var a = atividadeEmEdicao();
     if (!a) return "";
+    var r = relatorioAtual();
     var html = '<div class="container">';
     html += '<div class="field"><label>Tipo de atividade <span class="req">*</span></label>'+
       '<div class="fake-select" id="sel-tipo-ativ"><span class="'+(a.tipo_atividade?"val":"placeholder")+'">'+
       esc(a.tipo_atividade||"Selecionar tipo")+'</span>'+chevronIcon()+'</div></div>';
 
-    if (a.tipo_atividade === "Hora Máquina Trabalhada"){
+    var formulario = formularioDaAtividade(a.tipo_atividade);
+
+    if (formulario === "hora_maquina"){
       var camposHM = camposAtividade(a.tipo_atividade); // [tipo, observacao]
       html += campoHtml(camposHM[0], a.tipo);
 
@@ -1569,6 +1670,32 @@
 
       html += '<div class="section-title">Evidências fotográficas</div>';
       html += renderFotoGridHtml(a);
+
+    } else if (formulario === "maquinas_detalhado"){
+      var camposMD = camposAtividade(a.tipo_atividade); // [data_execucao]
+      html += campoHtml(camposMD[0], a.data_execucao);
+
+      var upObrigatorio = campoObrigatorioPara(r ? r.cliente : "", "UP");
+      html += '<div class="section-title">Equipamentos Utilizados</div>';
+      html += '<p class="helper-text" style="margin-top:0">Pode repetir o mesmo código com dados diferentes em cada item.</p>';
+      (a.maquinas||[]).forEach(function(m, idx){
+        html += '<div class="maquina-detalhada-card">'+
+          '<div class="row-2">'+
+            '<div class="fake-select" data-mdidx="'+idx+'" data-campo="equipamento"><span class="'+(m.equipamento?"val":"placeholder")+'">'+esc(m.equipamento||"Equipamento")+'</span>'+chevronIcon()+'</div>'+
+            '<div class="fake-select" data-mdidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Operador")+'</span>'+chevronIcon()+'</div>'+
+          '</div>'+
+          '<input class="campo-solo" type="text" placeholder="UP (Talhão)'+(upObrigatorio?" *":" (opcional)")+'" data-mdidx="'+idx+'" data-campo="up" value="'+escAttr(m.up||"")+'">'+
+          '<input class="campo-solo" type="text" placeholder="Trecho" data-mdidx="'+idx+'" data-campo="trecho" value="'+escAttr(m.trecho||"")+'">'+
+          '<input class="campo-solo" type="number" inputmode="decimal" placeholder="Quantidade" data-mdidx="'+idx+'" data-campo="quantidade" value="'+escAttr(m.quantidade==null?"":m.quantidade)+'">'+
+          '<textarea class="campo-solo" placeholder="Observação" data-mdidx="'+idx+'" data-campo="observacao">'+esc(m.observacao||"")+'</textarea>'+
+          '<button class="rm-maquina" data-mdidx="'+idx+'" data-action="rm-maquina-detalhada">'+closeXIcon()+' Remover</button>'+
+        '</div>';
+      });
+      html += '<button class="add-dashed" id="btn-add-maquina-detalhada">'+plusIcon()+' Adicionar equipamento</button>';
+
+      html += '<div class="section-title">Evidências fotográficas</div>';
+      html += renderFotoGridHtml(a);
+
     } else if (a.tipo_atividade){
       var campos = camposAtividade(a.tipo_atividade);
       campos.forEach(function(c){ html += campoHtml(c, a[c.k]); });
@@ -1630,7 +1757,7 @@
     document.querySelectorAll("#main textarea[data-k]").forEach(function(ta){
       ta.addEventListener("change", function(){ a[ta.getAttribute("data-k")] = ta.value; });
     });
-    // campos "select" genéricos definidos em camposAtividade (ex: trecho, tipo)
+    // campos "select" genéricos definidos em camposAtividade (ex: trecho, tipo, data_execucao)
     document.querySelectorAll('#main .fake-select[data-tipo]').forEach(function(sel){
       var k = sel.getAttribute("data-k");
       if (k === "tipo"){
@@ -1640,7 +1767,14 @@
         return;
       }
       var campo = camposAtividade(a.tipo_atividade).filter(function(c){ return c.k === k; })[0];
-      if (!campo || !campo.opts) return;
+      if (!campo) return;
+      if (campo.t === "date"){
+        sel.onclick = function(){
+          openDateSheet(a[k], function(v){ a[k] = v; render(); });
+        };
+        return;
+      }
+      if (!campo.opts) return;
       sel.onclick = function(){
         openSheet(campo.l, campo.opts, a[k], function(v){ a[k] = v; render(); }, true);
       };
@@ -1713,6 +1847,44 @@
       };
     });
 
+    // Equipamentos Utilizados (Máquinas Detalhado) — cada item tem
+    // equipamento, operador, UP, trecho, quantidade e observação próprios.
+    var btnAddMaquinaDetalhada = document.getElementById("btn-add-maquina-detalhada");
+    if (btnAddMaquinaDetalhada) btnAddMaquinaDetalhada.onclick = function(){
+      a.maquinas = a.maquinas || [];
+      a.maquinas.push({ equipamento:"", operador:"", up:"", trecho:"", quantidade:null, observacao:"" });
+      render();
+    };
+    document.querySelectorAll('.maquina-detalhada-card .fake-select[data-campo="equipamento"]').forEach(function(sel){
+      sel.onclick = function(){
+        var idx = Number(sel.getAttribute("data-mdidx"));
+        openSheet("Equipamento", equipamentosDisponiveis(r), a.maquinas[idx].equipamento, function(v){
+          a.maquinas[idx].equipamento = v; render();
+        }, true);
+      };
+    });
+    document.querySelectorAll('.maquina-detalhada-card .fake-select[data-campo="operador"]').forEach(function(sel){
+      sel.onclick = function(){
+        var idx = Number(sel.getAttribute("data-mdidx"));
+        openSheet("Operador", operadoresDisponiveis(r), a.maquinas[idx].operador, function(v){
+          a.maquinas[idx].operador = v; render();
+        }, true);
+      };
+    });
+    document.querySelectorAll('.maquina-detalhada-card input.campo-solo[data-campo], .maquina-detalhada-card textarea.campo-solo[data-campo]').forEach(function(campo){
+      campo.addEventListener("change", function(){
+        var idx = Number(campo.getAttribute("data-mdidx"));
+        var chave = campo.getAttribute("data-campo");
+        a.maquinas[idx][chave] = campo.type === "number" ? (campo.value === "" ? null : Number(campo.value)) : campo.value;
+      });
+    });
+    document.querySelectorAll('[data-action="rm-maquina-detalhada"]').forEach(function(btn){
+      btn.onclick = function(){
+        var idx = Number(btn.getAttribute("data-mdidx"));
+        a.maquinas.splice(idx,1); render();
+      };
+    });
+
     function processarArquivosFoto(fileList){
       var arquivos = Array.prototype.slice.call(fileList);
       if (!arquivos.length) return;
@@ -1760,7 +1932,7 @@
     var btnSalvar = document.getElementById("btn-salvar-ativ");
     if (btnSalvar) btnSalvar.onclick = function(){
       if (!a.tipo_atividade){ showToast("Selecione o tipo de atividade."); return; }
-      var faltando = validarAtividade(a);
+      var faltando = validarAtividade(a, r);
       if (faltando.length){
         showInfo("Campos obrigatórios pendentes", "Preencha antes de salvar: " + faltando.join(", ") + ".");
         return;
@@ -1776,20 +1948,31 @@
     };
   }
 
-  function validarAtividade(a){
+  function validarAtividade(a, r){
     var faltando = [];
     camposAtividade(a.tipo_atividade).forEach(function(c){
       if (!c.req) return;
       var v = a[c.k];
       if (v === undefined || v === null || v === "") faltando.push(c.l);
     });
-    if (a.tipo_atividade === "Hora Máquina Trabalhada"){
+    var formulario = formularioDaAtividade(a.tipo_atividade);
+    if (formulario === "hora_maquina"){
       if (!a.maquinas || !a.maquinas.length){
         faltando.push("Ao menos 1 máquina utilizada");
       } else if (a.maquinas.some(function(m){
         return !m.equipamento || !m.operador || m.hora_inicial === null || m.hora_inicial === undefined || m.hora_final === null || m.hora_final === undefined;
       })){
         faltando.push("Equipamento, operador e horas de todas as máquinas da lista");
+      }
+    } else if (formulario === "maquinas_detalhado"){
+      var upObrigatorio = campoObrigatorioPara(r ? r.cliente : "", "UP");
+      if (!a.maquinas || !a.maquinas.length){
+        faltando.push("Ao menos 1 equipamento utilizado");
+      } else if (a.maquinas.some(function(m){
+        return !m.equipamento || !m.operador || (upObrigatorio && !m.up) || !m.trecho ||
+          m.quantidade === null || m.quantidade === undefined || !m.observacao;
+      })){
+        faltando.push("Campos obrigatórios de cada equipamento (código, operador"+(upObrigatorio?", UP":"")+", trecho, quantidade, observação)");
       }
     } else {
       if (!a.equipamentos || !a.equipamentos.length){
@@ -1862,6 +2045,8 @@
   });
   carregarCadastrosCache();
   atualizarCadastrosRemoto();
+  carregarRegrasCache();
+  atualizarRegrasRemoto();
 
   if ("serviceWorker" in navigator){
     window.addEventListener("load", function(){
