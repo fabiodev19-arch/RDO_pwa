@@ -1406,11 +1406,23 @@
         if (f.storagePath || !f.blob) return; // já enviada, ou sem blob (reaberta sem o binário)
         var caminho = caminhoFoto(r, a.id, f);
         envios.push(
+          // upsert:false de propósito -- cada foto já tem caminho único (UUID),
+          // então nunca deveria haver conflito de verdade, e assim o Postgres
+          // gera um INSERT simples (sem ON CONFLICT DO UPDATE), que só precisa
+          // da política de INSERT -- não depende de política de UPDATE nenhuma.
           supabaseClient.storage.from(BUCKET_EVIDENCIAS)
-            .upload(caminho, f.blob, { upsert: true, contentType: "image/jpeg" })
+            .upload(caminho, f.blob, { upsert: false, contentType: "image/jpeg" })
             .then(function(resp){
               if (resp.error){
-                console.warn("Falha ao enviar foto para o Storage:", resp.error.message || resp.error);
+                var msg = String((resp.error && resp.error.message) || resp.error || "").toLowerCase();
+                var jaExiste = msg.indexOf("already exists") !== -1 || msg.indexOf("duplicate") !== -1;
+                if (jaExiste){
+                  // provavelmente um reenvio de uma tentativa anterior que já
+                  // tinha subido -- o arquivo já está lá, trata como sucesso.
+                  f.storagePath = caminho;
+                } else {
+                  console.warn("Falha ao enviar foto para o Storage:", resp.error.message || resp.error);
+                }
               } else {
                 f.storagePath = caminho;
               }
