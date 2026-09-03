@@ -216,14 +216,17 @@
     background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
     padding:12px; margin-bottom:9px;
   }
-  .maquina-detalhada-card .row-2{margin-bottom:9px;}
-  .maquina-detalhada-card .campo-solo{
+  .maquina-detalhada-card .row-2{margin-bottom:9px; display:flex; gap:8px;}
+  .maquina-detalhada-card .row-2 > input{margin-bottom:0;}
+  .maquina-detalhada-card .campo-solo,
+  .maquina-detalhada-card .campo-numerico-solo,
+  .maquina-detalhada-card .campo-texto-solo{
     display:block; width:100%; padding:12px 13px; border-radius:var(--radius-sm); border:1px solid var(--border);
     background:var(--surface-2); color:var(--text); font-size:14.5px; margin-bottom:9px;
   }
-  .maquina-detalhada-card textarea.campo-solo{min-height:56px; resize:vertical; line-height:1.4; font-family:inherit;}
-  .maquina-detalhada-card .campo-solo:focus{outline:none; border-color:var(--brand);}
-  .maquina-detalhada-card .campo-solo::placeholder{color:var(--text-dim);}
+  .maquina-detalhada-card textarea{min-height:56px; resize:vertical; line-height:1.4; font-family:inherit;}
+  .maquina-detalhada-card input:focus, .maquina-detalhada-card textarea:focus{outline:none; border-color:var(--brand);}
+  .maquina-detalhada-card input::placeholder, .maquina-detalhada-card textarea::placeholder{color:var(--text-dim);}
 
   /* ---------- Fotos de evidência ---------- */
   .foto-grid{display:flex; flex-wrap:wrap; gap:9px; margin-bottom:8px;}
@@ -865,6 +868,66 @@
     return { "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c];
   }); }
   function escAttr(s){ return esc(s).replace(/"/g,"&quot;"); }
+
+  /* ======================= TEXTO: MAIÚSCULA SEM ACENTO =======================
+     Todo campo de texto livre entra assim pro relatório sair padronizado
+     (ex: "manutenção" -> "MANUTENCAO"). Aplicado no blur (evento "change"),
+     não a cada tecla, pra não brigar com o cursor enquanto a pessoa digita. */
+  function normalizarTexto(str){
+    if (!str) return str;
+    return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+  }
+
+  /* ======================= NÚMERO: MÁSCARA PRÓPRIA DO PWA =======================
+     Campos numéricos usam <input type="text" inputmode="decimal"> em vez de
+     type="number" nativo -- o comportamento do type="number" varia muito
+     entre aparelhos Android (teclado numérico limpo em uns, teclado cheio
+     em outros, aceita vírgula em uns e não em outros). Com texto + máscara
+     própria, o formato fica idêntico em qualquer aparelho: só dígitos e uma
+     vírgula decimal, exibido sempre com vírgula (padrão brasileiro). */
+  function filtrarEntradaNumerica(valor){
+    var limpo = String(valor||"").replace(/[^\d,.]/g, "").replace(/\./g, ",");
+    var partes = limpo.split(",");
+    if (partes.length > 2) limpo = partes[0] + "," + partes.slice(1).join("");
+    return limpo;
+  }
+  function paraNumero(valorExibido){
+    if (valorExibido === "" || valorExibido == null) return null;
+    var n = parseFloat(String(valorExibido).replace(",", "."));
+    return isNaN(n) ? null : n;
+  }
+  function formatarNumeroExibicao(n){
+    if (n === null || n === undefined || n === "") return "";
+    return String(n).replace(".", ",");
+  }
+  // Liga a máscara (filtra ao digitar) + guarda o valor numérico real no
+  // objeto de dados ao sair do campo (change). Reaproveitado por todo
+  // campo numérico do app, dentro ou fora de listas repetíveis.
+  function wireCampoNumerico(input, aoMudar){
+    input.addEventListener("input", function(){
+      var pos = input.selectionStart;
+      var antes = input.value;
+      var depois = filtrarEntradaNumerica(antes);
+      if (depois !== antes){
+        input.value = depois;
+        var diff = depois.length - antes.length;
+        try { input.setSelectionRange(pos + diff, pos + diff); } catch(e){}
+      }
+    });
+    input.addEventListener("change", function(){
+      var n = paraNumero(input.value);
+      input.value = formatarNumeroExibicao(n);
+      aoMudar(n);
+    });
+  }
+  // Mesma ideia pro texto livre: maiúscula sem acento ao sair do campo.
+  function wireCampoTexto(campo, aoMudar){
+    campo.addEventListener("change", function(){
+      var v = normalizarTexto(campo.value);
+      campo.value = v;
+      aoMudar(v);
+    });
+  }
   function checkIcon(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>'; }
   function chevronIcon(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>'; }
   function trashIcon(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z"/></svg>'; }
@@ -1236,11 +1299,18 @@
     var label = '<label>'+esc(campo.l)+reqStar+'</label>';
     if (campo.t === "text"){
       return '<div class="field" data-k="'+campo.k+'">'+label+
-        '<input type="text" data-k="'+campo.k+'" value="'+escAttr(valor||"")+'" placeholder="'+escAttr(campo.ph||"")+'"></div>';
+        '<input type="text" class="campo-texto" data-k="'+campo.k+'" value="'+escAttr(valor||"")+'" placeholder="'+escAttr(campo.ph||"")+'"></div>';
     }
     if (campo.t === "number"){
+      // type="text" + inputmode="decimal" em vez de type="number": o
+      // type="number" nativo varia de teclado/comportamento entre
+      // aparelhos Android (alguns mostram teclado numérico limpo, outros
+      // o teclado cheio com "número" só de dica, alguns aceitam vírgula,
+      // outros só ponto). Com texto + máscara própria (ver
+      // wireCampoNumerico), o formato fica sempre o mesmo em qualquer
+      // aparelho -- "o formato do PWA", não o do teclado do sistema.
       return '<div class="field" data-k="'+campo.k+'">'+label+
-        '<input type="number" inputmode="decimal" step="'+(campo.step||"any")+'" data-k="'+campo.k+'" value="'+escAttr(valor==null?"":valor)+'"></div>';
+        '<input type="text" inputmode="decimal" class="campo-numerico" data-k="'+campo.k+'" value="'+escAttr(valor==null?"":formatarNumeroExibicao(valor))+'"></div>';
     }
     if (campo.t === "date"){
       var dispVal = valor ? formatarData(valor) : "";
@@ -1252,7 +1322,7 @@
     }
     if (campo.t === "textarea"){
       return '<div class="field" data-k="'+campo.k+'">'+label+
-        '<textarea data-k="'+campo.k+'" placeholder="Observações...">'+esc(valor||"")+'</textarea></div>';
+        '<textarea class="campo-texto" data-k="'+campo.k+'" placeholder="Observações...">'+esc(valor||"")+'</textarea></div>';
     }
     if (campo.t === "select" || campo.t === "select-eq" || campo.t === "select-op" || campo.t === "select-tipo-hm"){
       var cls = valor ? "val" : "placeholder";
@@ -1307,6 +1377,7 @@
       return partesMD.join(" · ") || "Toque para preencher";
     }
     var partes2 = [];
+    if (a.up) partes2.push("UP "+a.up);
     if (a.trecho) partes2.push("Trecho "+a.trecho);
     if (a.comprimento_m) partes2.push(a.comprimento_m+"m compr.");
     if (a.equipamentos && a.equipamentos.length) partes2.push(a.equipamentos.length+" equip.");
@@ -1341,16 +1412,14 @@
     var r = relatorioAtual();
 
     // campos de texto/número/data — identificação
-    document.querySelectorAll("#main input[data-k]").forEach(function(input){
-      input.addEventListener("change", function(){
-        var k = input.getAttribute("data-k");
-        var val = input.type === "number" ? (input.value === "" ? null : Number(input.value)) : input.value;
-        r[k] = val;
-        persistir(r);
-      });
+    document.querySelectorAll("#main input.campo-numerico[data-k]").forEach(function(input){
+      wireCampoNumerico(input, function(n){ r[input.getAttribute("data-k")] = n; persistir(r); });
     });
-    document.querySelectorAll("#main textarea[data-k]").forEach(function(ta){
-      ta.addEventListener("change", function(){ r[ta.getAttribute("data-k")] = ta.value; persistir(r); });
+    document.querySelectorAll("#main input.campo-texto[data-k]").forEach(function(input){
+      wireCampoTexto(input, function(v){ r[input.getAttribute("data-k")] = v; persistir(r); });
+    });
+    document.querySelectorAll("#main textarea.campo-texto[data-k]").forEach(function(ta){
+      wireCampoTexto(ta, function(v){ r[ta.getAttribute("data-k")] = v; persistir(r); });
     });
 
     // selects (identificação)
@@ -1558,12 +1627,18 @@
           if (formulario === "hora_maquina"){
             dados = { hora_inicial: m.hora_inicial, hora_final: m.hora_final };
           } else if (formulario === "maquinas_detalhado"){
-            dados = { up: m.up, trecho: m.trecho, quantidade: m.quantidade, observacao: m.observacao };
+            dados = {
+              up: m.up, trecho: m.trecho, quantidade: m.quantidade,
+              comprimento_m: m.comprimento_m, largura_m: m.largura_m, profundidade_cm: m.profundidade_cm,
+              hora_inicial: m.hora_inicial, hora_final: m.hora_final,
+              observacao: m.observacao
+            };
           }
           return { equipamento: m.equipamento, operador: m.operador, dados: dados };
         });
         return {
           tipo_atividade: a.tipo_atividade,
+          up: a.up || null,
           comprimento_m: a.comprimento_m, largura_m: a.largura_m, profundidade_cm: a.profundidade_cm,
           dmt_km_inicial: a.dmt_km_inicial, dmt_km_final: a.dmt_km_final,
           trecho: a.trecho, tipo: a.tipo, observacao: a.observacao,
@@ -1658,8 +1733,8 @@
             '<div class="fake-select" data-maqidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Operador")+'</span>'+chevronIcon()+'</div>'+
           '</div>'+
           '<div class="row-2">'+
-            '<input type="number" inputmode="decimal" step="0.1" placeholder="Hora inicial" data-maqidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":m.hora_inicial)+'">'+
-            '<input type="number" inputmode="decimal" step="0.1" placeholder="Hora final" data-maqidx="'+idx+'" data-campo="hora_final" value="'+escAttr(m.hora_final==null?"":m.hora_final)+'">'+
+            '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="Hora inicial" data-maqidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">'+
+            '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="Hora final" data-maqidx="'+idx+'" data-campo="hora_final" value="'+escAttr(m.hora_final==null?"":formatarNumeroExibicao(m.hora_final))+'">'+
           '</div>'+
           '<button class="rm-maquina" data-maqidx="'+idx+'" data-action="rm-maquina">'+closeXIcon()+' Remover máquina</button>'+
         '</div>';
@@ -1684,10 +1759,19 @@
             '<div class="fake-select" data-mdidx="'+idx+'" data-campo="equipamento"><span class="'+(m.equipamento?"val":"placeholder")+'">'+esc(m.equipamento||"Equipamento")+'</span>'+chevronIcon()+'</div>'+
             '<div class="fake-select" data-mdidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Operador")+'</span>'+chevronIcon()+'</div>'+
           '</div>'+
-          '<input class="campo-solo" type="text" placeholder="UP (Talhão)'+(upObrigatorio?" *":" (opcional)")+'" data-mdidx="'+idx+'" data-campo="up" value="'+escAttr(m.up||"")+'">'+
-          '<input class="campo-solo" type="text" placeholder="Trecho" data-mdidx="'+idx+'" data-campo="trecho" value="'+escAttr(m.trecho||"")+'">'+
-          '<input class="campo-solo" type="number" inputmode="decimal" placeholder="Quantidade" data-mdidx="'+idx+'" data-campo="quantidade" value="'+escAttr(m.quantidade==null?"":m.quantidade)+'">'+
-          '<textarea class="campo-solo" placeholder="Observação" data-mdidx="'+idx+'" data-campo="observacao">'+esc(m.observacao||"")+'</textarea>'+
+          '<input class="campo-solo campo-texto-solo" type="text" placeholder="UP (Talhão)'+(upObrigatorio?" *":" (opcional)")+'" data-mdidx="'+idx+'" data-campo="up" value="'+escAttr(m.up||"")+'">'+
+          '<input class="campo-solo campo-texto-solo" type="text" placeholder="Trecho" data-mdidx="'+idx+'" data-campo="trecho" value="'+escAttr(m.trecho||"")+'">'+
+          '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" placeholder="Quantidade" data-mdidx="'+idx+'" data-campo="quantidade" value="'+escAttr(m.quantidade==null?"":formatarNumeroExibicao(m.quantidade))+'">'+
+          '<div class="row-2">'+
+            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="Comprimento (m)" data-mdidx="'+idx+'" data-campo="comprimento_m" value="'+escAttr(m.comprimento_m==null?"":formatarNumeroExibicao(m.comprimento_m))+'">'+
+            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="Largura (m)" data-mdidx="'+idx+'" data-campo="largura_m" value="'+escAttr(m.largura_m==null?"":formatarNumeroExibicao(m.largura_m))+'">'+
+          '</div>'+
+          '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" placeholder="Profundidade (cm)" data-mdidx="'+idx+'" data-campo="profundidade_cm" value="'+escAttr(m.profundidade_cm==null?"":formatarNumeroExibicao(m.profundidade_cm))+'">'+
+          '<div class="row-2">'+
+            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="H. inicial" data-mdidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">'+
+            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="H. final" data-mdidx="'+idx+'" data-campo="hora_final" value="'+escAttr(m.hora_final==null?"":formatarNumeroExibicao(m.hora_final))+'">'+
+          '</div>'+
+          '<textarea class="campo-solo campo-texto-solo" placeholder="Observação" data-mdidx="'+idx+'" data-campo="observacao">'+esc(m.observacao||"")+'</textarea>'+
           '<button class="rm-maquina" data-mdidx="'+idx+'" data-action="rm-maquina-detalhada">'+closeXIcon()+' Remover</button>'+
         '</div>';
       });
@@ -1697,6 +1781,10 @@
       html += renderFotoGridHtml(a);
 
     } else if (a.tipo_atividade){
+      var upObrigatorioPadrao = campoObrigatorioPara(r ? r.cliente : "", "UP");
+      html += '<div class="field"><label>UP (Talhão)'+(upObrigatorioPadrao?' <span class="req">*</span>':' (opcional)')+'</label>'+
+        '<input type="text" class="campo-texto" data-k="up" value="'+escAttr(a.up||"")+'"></div>';
+
       var campos = camposAtividade(a.tipo_atividade);
       campos.forEach(function(c){ html += campoHtml(c, a[c.k]); });
 
@@ -1748,14 +1836,14 @@
       }, false);
     };
 
-    document.querySelectorAll("#main input[data-k]").forEach(function(input){
-      input.addEventListener("change", function(){
-        var k = input.getAttribute("data-k");
-        a[k] = input.type === "number" ? (input.value === "" ? null : Number(input.value)) : input.value;
-      });
+    document.querySelectorAll("#main input.campo-numerico[data-k]").forEach(function(input){
+      wireCampoNumerico(input, function(n){ a[input.getAttribute("data-k")] = n; });
     });
-    document.querySelectorAll("#main textarea[data-k]").forEach(function(ta){
-      ta.addEventListener("change", function(){ a[ta.getAttribute("data-k")] = ta.value; });
+    document.querySelectorAll("#main input.campo-texto[data-k]").forEach(function(input){
+      wireCampoTexto(input, function(v){ a[input.getAttribute("data-k")] = v; });
+    });
+    document.querySelectorAll("#main textarea.campo-texto[data-k]").forEach(function(ta){
+      wireCampoTexto(ta, function(v){ a[ta.getAttribute("data-k")] = v; });
     });
     // campos "select" genéricos definidos em camposAtividade (ex: trecho, tipo, data_execucao)
     document.querySelectorAll('#main .fake-select[data-tipo]').forEach(function(sel){
@@ -1833,11 +1921,10 @@
         }, true);
       };
     });
-    document.querySelectorAll('.maquina-card input[data-campo]').forEach(function(input){
-      input.addEventListener("change", function(){
+    document.querySelectorAll('.maquina-card input.campo-numerico[data-campo]').forEach(function(input){
+      wireCampoNumerico(input, function(n){
         var idx = Number(input.getAttribute("data-maqidx"));
-        var campo = input.getAttribute("data-campo");
-        a.maquinas[idx][campo] = input.value === "" ? null : Number(input.value);
+        a.maquinas[idx][input.getAttribute("data-campo")] = n;
       });
     });
     document.querySelectorAll('[data-action="rm-maquina"]').forEach(function(btn){
@@ -1871,11 +1958,16 @@
         }, true);
       };
     });
-    document.querySelectorAll('.maquina-detalhada-card input.campo-solo[data-campo], .maquina-detalhada-card textarea.campo-solo[data-campo]').forEach(function(campo){
-      campo.addEventListener("change", function(){
+    document.querySelectorAll('.maquina-detalhada-card input.campo-numerico-solo[data-campo]').forEach(function(campo){
+      wireCampoNumerico(campo, function(n){
         var idx = Number(campo.getAttribute("data-mdidx"));
-        var chave = campo.getAttribute("data-campo");
-        a.maquinas[idx][chave] = campo.type === "number" ? (campo.value === "" ? null : Number(campo.value)) : campo.value;
+        a.maquinas[idx][campo.getAttribute("data-campo")] = n;
+      });
+    });
+    document.querySelectorAll('.maquina-detalhada-card input.campo-texto-solo[data-campo], .maquina-detalhada-card textarea.campo-texto-solo[data-campo]').forEach(function(campo){
+      wireCampoTexto(campo, function(v){
+        var idx = Number(campo.getAttribute("data-mdidx"));
+        a.maquinas[idx][campo.getAttribute("data-campo")] = v;
       });
     });
     document.querySelectorAll('[data-action="rm-maquina-detalhada"]').forEach(function(btn){
@@ -1970,11 +2062,19 @@
         faltando.push("Ao menos 1 equipamento utilizado");
       } else if (a.maquinas.some(function(m){
         return !m.equipamento || !m.operador || (upObrigatorio && !m.up) || !m.trecho ||
-          m.quantidade === null || m.quantidade === undefined || !m.observacao;
+          m.quantidade === null || m.quantidade === undefined ||
+          m.comprimento_m === null || m.comprimento_m === undefined ||
+          m.largura_m === null || m.largura_m === undefined ||
+          m.profundidade_cm === null || m.profundidade_cm === undefined ||
+          m.hora_inicial === null || m.hora_inicial === undefined ||
+          m.hora_final === null || m.hora_final === undefined ||
+          !m.observacao;
       })){
-        faltando.push("Campos obrigatórios de cada equipamento (código, operador"+(upObrigatorio?", UP":"")+", trecho, quantidade, observação)");
+        faltando.push("Campos obrigatórios de cada equipamento (código, operador"+(upObrigatorio?", UP":"")+", trecho, quantidade, comprimento, largura, profundidade, horas, observação)");
       }
     } else {
+      var upObrigatorioPadraoV = campoObrigatorioPara(r ? r.cliente : "", "UP");
+      if (upObrigatorioPadraoV && !a.up) faltando.push("UP (Talhão)");
       if (!a.equipamentos || !a.equipamentos.length){
         faltando.push("Ao menos 1 equipamento utilizado");
       } else if (a.equipamentos.some(function(eq){ return !eq.equipamento || !eq.operador; })){
