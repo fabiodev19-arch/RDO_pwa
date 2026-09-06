@@ -490,15 +490,39 @@
     if (REGRAS.formulario_atividade && REGRAS.formulario_atividade[tipo]) return REGRAS.formulario_atividade[tipo];
     return "padrao";
   }
-  // Obrigatoriedade de um campo, configurável por cliente (ex: "Suzano:UP").
-  // Sem regra configurada -> obrigatório por padrão (mais seguro exigir de
+  // Obrigatoriedade de um campo, configurável por cliente E por atividade
+  // (ex: "Suzano:Construção de Aterro:Comprimento"). Se não existir uma
+  // regra específica pra essa atividade, cai pra uma regra geral do
+  // cliente (ex: "Suzano:Comprimento", sem atividade) -- assim toda regra
+  // configurada antes de existir essa granularidade continua valendo,
+  // e só quem precisar de exceção por atividade configura a específica.
+  // Sem regra nenhuma -> obrigatório por padrão (mais seguro exigir de
   // mais do que deixar passar um campo importante em branco).
-  function campoObrigatorioPara(cliente, campo){
-    var chave = cliente + ":" + campo;
-    if (REGRAS.campo_obrigatorio && Object.prototype.hasOwnProperty.call(REGRAS.campo_obrigatorio, chave)){
-      return !!REGRAS.campo_obrigatorio[chave];
-    }
+  function campoObrigatorioPara(cliente, atividade, campo){
+    var mapa = REGRAS.campo_obrigatorio || {};
+    var chaveEspecifica = cliente + ":" + atividade + ":" + campo;
+    if (Object.prototype.hasOwnProperty.call(mapa, chaveEspecifica)) return !!mapa[chaveEspecifica];
+    var chaveGeral = cliente + ":" + campo;
+    if (Object.prototype.hasOwnProperty.call(mapa, chaveGeral)) return !!mapa[chaveGeral];
     return true;
+  }
+  // Nome "de negócio" de cada campo interno -- é esse nome que aparece na
+  // tela de Configurações e é usado na chave da regra (ex: "...:Trecho").
+  var NOME_REGRA_CAMPO = {
+    up: "UP", trecho: "Trecho", comprimento_m: "Comprimento", largura_m: "Largura",
+    profundidade_cm: "Profundidade", dmt_km_inicial: "DMT", dmt_km_final: "DMT",
+    observacao: "Observação", tipo: "Tipo", quantidade: "Quantidade",
+    hora_inicial: "Hora Inicial", hora_final: "Hora Final"
+  };
+  // Campos sem entrada no mapa (equipamento, operador, tipo_atividade...)
+  // ficam sempre obrigatórios, fixos -- sem opção de tornar opcional.
+  function reqDinamico(cliente, atividade, chaveInterna){
+    var nome = NOME_REGRA_CAMPO[chaveInterna];
+    if (!nome) return true;
+    return campoObrigatorioPara(cliente, atividade, nome);
+  }
+  function phDinamico(cliente, atividade, chaveInterna, textoBase){
+    return textoBase + (reqDinamico(cliente, atividade, chaveInterna) ? "" : " (opcional)");
   }
 
   var IDENT_CAMPOS = [
@@ -519,13 +543,15 @@
   // em REGRAS.formulario_atividade (ver formularioDaAtividade). Cada
   // template tem sua lista repetível própria, tratada à parte em
   // renderTelaAtividade (equipamentos / maquinas / maquinas detalhadas).
-  function camposAtividade(tipo){
+  // "cliente" entra aqui pra calcular a obrigatoriedade de cada campo com
+  // reqDinamico -- por isso deixou de ser um "req:true" fixo.
+  function camposAtividade(tipo, cliente){
     var formulario = formularioDaAtividade(tipo);
 
     if (formulario === "hora_maquina"){
       return [
-        { k:"tipo", l:"Tipo", t:"select-tipo-hm", req:true },
-        { k:"observacao", l:"Observação (complemento do tipo)", t:"textarea", req:true, ph:"Ex: da fazenda Doce Moranga para a fazenda Elo Dourado 2" }
+        { k:"tipo", l:"Tipo", t:"select-tipo-hm", req:reqDinamico(cliente,tipo,"tipo") },
+        { k:"observacao", l:"Observação (complemento do tipo)", t:"textarea", req:reqDinamico(cliente,tipo,"observacao"), ph:"Ex: da fazenda Doce Moranga para a fazenda Elo Dourado 2" }
       ];
     }
 
@@ -536,16 +562,16 @@
     }
 
     var campos = [
-      { k:"comprimento_m", l:"Comprimento (m)", t:"number", req:true },
-      { k:"largura_m", l:"Largura (m)", t:"number", req:true },
-      { k:"profundidade_cm", l:"Profundidade (cm)", t:"number", req:true }
+      { k:"comprimento_m", l:"Comprimento (m)", t:"number", req:reqDinamico(cliente,tipo,"comprimento_m") },
+      { k:"largura_m", l:"Largura (m)", t:"number", req:reqDinamico(cliente,tipo,"largura_m") },
+      { k:"profundidade_cm", l:"Profundidade (cm)", t:"number", req:reqDinamico(cliente,tipo,"profundidade_cm") }
     ];
     if (tipo === "Transporte de Material"){
-      campos.push({ k:"dmt_km_inicial", l:"DMT inicial (km)", t:"number", step:"0.1", req:true });
-      campos.push({ k:"dmt_km_final", l:"DMT final (km)", t:"number", step:"0.1", req:true });
+      campos.push({ k:"dmt_km_inicial", l:"DMT inicial (km)", t:"number", step:"0.1", req:reqDinamico(cliente,tipo,"dmt_km_inicial") });
+      campos.push({ k:"dmt_km_final", l:"DMT final (km)", t:"number", step:"0.1", req:reqDinamico(cliente,tipo,"dmt_km_final") });
     }
-    campos.push({ k:"trecho", l:"Trecho", t:"select", opts:CATALOGO.trechos, req:true });
-    campos.push({ k:"observacao", l:"Observação", t:"textarea", req:true, ph:"Descreva o serviço executado" });
+    campos.push({ k:"trecho", l:"Trecho", t:"select", opts:CATALOGO.trechos, req:reqDinamico(cliente,tipo,"trecho") });
+    campos.push({ k:"observacao", l:"Observação", t:"textarea", req:reqDinamico(cliente,tipo,"observacao"), ph:"Descreva o serviço executado" });
     return campos;
   }
 
@@ -1721,7 +1747,7 @@
     var formulario = formularioDaAtividade(a.tipo_atividade);
 
     if (formulario === "hora_maquina"){
-      var camposHM = camposAtividade(a.tipo_atividade); // [tipo, observacao]
+      var camposHM = camposAtividade(a.tipo_atividade, r ? r.cliente : ""); // [tipo, observacao]
       html += campoHtml(camposHM[0], a.tipo);
 
       html += '<div class="section-title">Máquinas utilizadas</div>';
@@ -1733,8 +1759,8 @@
             '<div class="fake-select" data-maqidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Operador")+'</span>'+chevronIcon()+'</div>'+
           '</div>'+
           '<div class="row-2">'+
-            '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="Hora inicial" data-maqidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">'+
-            '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="Hora final" data-maqidx="'+idx+'" data-campo="hora_final" value="'+escAttr(m.hora_final==null?"":formatarNumeroExibicao(m.hora_final))+'">'+
+            '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="'+phDinamico(r?r.cliente:"",a.tipo_atividade,"hora_inicial","Hora inicial")+'" data-maqidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">'+
+            '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="'+phDinamico(r?r.cliente:"",a.tipo_atividade,"hora_final","Hora final")+'" data-maqidx="'+idx+'" data-campo="hora_final" value="'+escAttr(m.hora_final==null?"":formatarNumeroExibicao(m.hora_final))+'">'+
           '</div>'+
           '<button class="rm-maquina" data-maqidx="'+idx+'" data-action="rm-maquina">'+closeXIcon()+' Remover máquina</button>'+
         '</div>';
@@ -1747,10 +1773,10 @@
       html += renderFotoGridHtml(a);
 
     } else if (formulario === "maquinas_detalhado"){
-      var camposMD = camposAtividade(a.tipo_atividade); // [data_execucao]
+      var camposMD = camposAtividade(a.tipo_atividade, r ? r.cliente : ""); // [data_execucao]
       html += campoHtml(camposMD[0], a.data_execucao);
 
-      var upObrigatorio = campoObrigatorioPara(r ? r.cliente : "", "UP");
+      var clienteAtual = r ? r.cliente : "";
       html += '<div class="section-title">Equipamentos Utilizados</div>';
       html += '<p class="helper-text" style="margin-top:0">Pode repetir o mesmo código com dados diferentes em cada item.</p>';
       (a.maquinas||[]).forEach(function(m, idx){
@@ -1759,19 +1785,19 @@
             '<div class="fake-select" data-mdidx="'+idx+'" data-campo="equipamento"><span class="'+(m.equipamento?"val":"placeholder")+'">'+esc(m.equipamento||"Equipamento")+'</span>'+chevronIcon()+'</div>'+
             '<div class="fake-select" data-mdidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Operador")+'</span>'+chevronIcon()+'</div>'+
           '</div>'+
-          '<input class="campo-solo campo-texto-solo" type="text" placeholder="UP (Talhão)'+(upObrigatorio?" *":" (opcional)")+'" data-mdidx="'+idx+'" data-campo="up" value="'+escAttr(m.up||"")+'">'+
-          '<input class="campo-solo campo-texto-solo" type="text" placeholder="Trecho" data-mdidx="'+idx+'" data-campo="trecho" value="'+escAttr(m.trecho||"")+'">'+
-          '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" placeholder="Quantidade" data-mdidx="'+idx+'" data-campo="quantidade" value="'+escAttr(m.quantidade==null?"":formatarNumeroExibicao(m.quantidade))+'">'+
+          '<input class="campo-solo campo-texto-solo" type="text" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"up","UP (Talhão)")+'" data-mdidx="'+idx+'" data-campo="up" value="'+escAttr(m.up||"")+'">'+
+          '<input class="campo-solo campo-texto-solo" type="text" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"trecho","Trecho")+'" data-mdidx="'+idx+'" data-campo="trecho" value="'+escAttr(m.trecho||"")+'">'+
+          '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"quantidade","Quantidade")+'" data-mdidx="'+idx+'" data-campo="quantidade" value="'+escAttr(m.quantidade==null?"":formatarNumeroExibicao(m.quantidade))+'">'+
           '<div class="row-2">'+
-            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="Comprimento (m)" data-mdidx="'+idx+'" data-campo="comprimento_m" value="'+escAttr(m.comprimento_m==null?"":formatarNumeroExibicao(m.comprimento_m))+'">'+
-            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="Largura (m)" data-mdidx="'+idx+'" data-campo="largura_m" value="'+escAttr(m.largura_m==null?"":formatarNumeroExibicao(m.largura_m))+'">'+
+            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"comprimento_m","Comprimento (m)")+'" data-mdidx="'+idx+'" data-campo="comprimento_m" value="'+escAttr(m.comprimento_m==null?"":formatarNumeroExibicao(m.comprimento_m))+'">'+
+            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"largura_m","Largura (m)")+'" data-mdidx="'+idx+'" data-campo="largura_m" value="'+escAttr(m.largura_m==null?"":formatarNumeroExibicao(m.largura_m))+'">'+
           '</div>'+
-          '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" placeholder="Profundidade (cm)" data-mdidx="'+idx+'" data-campo="profundidade_cm" value="'+escAttr(m.profundidade_cm==null?"":formatarNumeroExibicao(m.profundidade_cm))+'">'+
+          '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"profundidade_cm","Profundidade (cm)")+'" data-mdidx="'+idx+'" data-campo="profundidade_cm" value="'+escAttr(m.profundidade_cm==null?"":formatarNumeroExibicao(m.profundidade_cm))+'">'+
           '<div class="row-2">'+
-            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="H. inicial" data-mdidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">'+
-            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="H. final" data-mdidx="'+idx+'" data-campo="hora_final" value="'+escAttr(m.hora_final==null?"":formatarNumeroExibicao(m.hora_final))+'">'+
+            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"hora_inicial","H. inicial")+'" data-mdidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">'+
+            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"hora_final","H. final")+'" data-mdidx="'+idx+'" data-campo="hora_final" value="'+escAttr(m.hora_final==null?"":formatarNumeroExibicao(m.hora_final))+'">'+
           '</div>'+
-          '<textarea class="campo-solo campo-texto-solo" placeholder="Observação" data-mdidx="'+idx+'" data-campo="observacao">'+esc(m.observacao||"")+'</textarea>'+
+          '<textarea class="campo-solo campo-texto-solo" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"observacao","Observação")+'" data-mdidx="'+idx+'" data-campo="observacao">'+esc(m.observacao||"")+'</textarea>'+
           '<button class="rm-maquina" data-mdidx="'+idx+'" data-action="rm-maquina-detalhada">'+closeXIcon()+' Remover</button>'+
         '</div>';
       });
@@ -1781,11 +1807,11 @@
       html += renderFotoGridHtml(a);
 
     } else if (a.tipo_atividade){
-      var upObrigatorioPadrao = campoObrigatorioPara(r ? r.cliente : "", "UP");
+      var upObrigatorioPadrao = reqDinamico(r ? r.cliente : "", a.tipo_atividade, "up");
       html += '<div class="field"><label>UP (Talhão)'+(upObrigatorioPadrao?' <span class="req">*</span>':' (opcional)')+'</label>'+
         '<input type="text" class="campo-texto" data-k="up" value="'+escAttr(a.up||"")+'"></div>';
 
-      var campos = camposAtividade(a.tipo_atividade);
+      var campos = camposAtividade(a.tipo_atividade, r ? r.cliente : "");
       campos.forEach(function(c){ html += campoHtml(c, a[c.k]); });
 
       html += '<div class="section-title">Equipamentos utilizados</div>';
@@ -1854,7 +1880,7 @@
         };
         return;
       }
-      var campo = camposAtividade(a.tipo_atividade).filter(function(c){ return c.k === k; })[0];
+      var campo = camposAtividade(a.tipo_atividade, r ? r.cliente : "").filter(function(c){ return c.k === k; })[0];
       if (!campo) return;
       if (campo.t === "date"){
         sel.onclick = function(){
@@ -2040,41 +2066,50 @@
     };
   }
 
-  function validarAtividade(a, r){
+  function campoVazio(v){ return v === undefined || v === null || v === ""; }
+  // Lista os nomes "de negócio" dos campos que estão faltando dentro de um
+  // objeto (uma máquina, ou a própria atividade), considerando a
+  // obrigatoriedade configurada por cliente pra cada um.
+  function nomesFaltando(objeto, cliente, atividade, chaves){
     var faltando = [];
-    camposAtividade(a.tipo_atividade).forEach(function(c){
+    chaves.forEach(function(chave){
+      if (reqDinamico(cliente, atividade, chave) && campoVazio(objeto[chave])) faltando.push(NOME_REGRA_CAMPO[chave] || chave);
+    });
+    return faltando;
+  }
+
+  function validarAtividade(a, r){
+    var cliente = r ? r.cliente : "";
+    var faltando = [];
+    camposAtividade(a.tipo_atividade, cliente).forEach(function(c){
       if (!c.req) return;
-      var v = a[c.k];
-      if (v === undefined || v === null || v === "") faltando.push(c.l);
+      if (campoVazio(a[c.k])) faltando.push(c.l);
     });
     var formulario = formularioDaAtividade(a.tipo_atividade);
     if (formulario === "hora_maquina"){
       if (!a.maquinas || !a.maquinas.length){
         faltando.push("Ao menos 1 máquina utilizada");
-      } else if (a.maquinas.some(function(m){
-        return !m.equipamento || !m.operador || m.hora_inicial === null || m.hora_inicial === undefined || m.hora_final === null || m.hora_final === undefined;
-      })){
-        faltando.push("Equipamento, operador e horas de todas as máquinas da lista");
+      } else {
+        var faltouAlgumaHM = a.maquinas.some(function(m){
+          return !m.equipamento || !m.operador || nomesFaltando(m, cliente, a.tipo_atividade, ["hora_inicial","hora_final"]).length;
+        });
+        if (faltouAlgumaHM) faltando.push("Equipamento, operador e horas de todas as máquinas da lista");
       }
     } else if (formulario === "maquinas_detalhado"){
-      var upObrigatorio = campoObrigatorioPara(r ? r.cliente : "", "UP");
+      var camposPorMaquina = ["up","trecho","quantidade","comprimento_m","largura_m","profundidade_cm","hora_inicial","hora_final","observacao"];
       if (!a.maquinas || !a.maquinas.length){
         faltando.push("Ao menos 1 equipamento utilizado");
-      } else if (a.maquinas.some(function(m){
-        return !m.equipamento || !m.operador || (upObrigatorio && !m.up) || !m.trecho ||
-          m.quantidade === null || m.quantidade === undefined ||
-          m.comprimento_m === null || m.comprimento_m === undefined ||
-          m.largura_m === null || m.largura_m === undefined ||
-          m.profundidade_cm === null || m.profundidade_cm === undefined ||
-          m.hora_inicial === null || m.hora_inicial === undefined ||
-          m.hora_final === null || m.hora_final === undefined ||
-          !m.observacao;
-      })){
-        faltando.push("Campos obrigatórios de cada equipamento (código, operador"+(upObrigatorio?", UP":"")+", trecho, quantidade, comprimento, largura, profundidade, horas, observação)");
+      } else {
+        var nomesFaltandoEmAlguma = {};
+        a.maquinas.forEach(function(m){
+          if (!m.equipamento || !m.operador) nomesFaltandoEmAlguma["Equipamento/Operador"] = true;
+          nomesFaltando(m, cliente, a.tipo_atividade, camposPorMaquina).forEach(function(nome){ nomesFaltandoEmAlguma[nome] = true; });
+        });
+        var listaNomes = Object.keys(nomesFaltandoEmAlguma);
+        if (listaNomes.length) faltando.push("Campos obrigatórios pendentes em algum equipamento: "+listaNomes.join(", "));
       }
     } else {
-      var upObrigatorioPadraoV = campoObrigatorioPara(r ? r.cliente : "", "UP");
-      if (upObrigatorioPadraoV && !a.up) faltando.push("UP (Talhão)");
+      faltando = faltando.concat(nomesFaltando(a, cliente, a.tipo_atividade, ["up"]));
       if (!a.equipamentos || !a.equipamentos.length){
         faltando.push("Ao menos 1 equipamento utilizado");
       } else if (a.equipamentos.some(function(eq){ return !eq.equipamento || !eq.operador; })){
