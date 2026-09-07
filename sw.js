@@ -5,7 +5,7 @@
 // internet — inclusive na primeira tela, sem precisar já ter sido aberto
 // online antes de ir a campo.
 
-var CACHE_NAME = "gtm-rdo-v20";
+var CACHE_NAME = "gtm-rdo-v21";
 var APP_SHELL = [
   "./",
   "./index.html",
@@ -49,6 +49,46 @@ self.addEventListener("fetch", function (event) {
       return fetch(event.request).catch(function () {
         return caches.match("./index.html");
       });
+    })
+  );
+});
+
+// ------------------------------------------------------------------------
+// Push: dispara quando o painel devolve uma atividade pra correção. O
+// envio de verdade acontece numa função fora do banco (Edge Function),
+// que usa a chave privada VAPID -- aqui só mostra a notificação que
+// chegou, funciona mesmo com o app fechado (é o motivo de existir).
+// ------------------------------------------------------------------------
+self.addEventListener("push", function (event) {
+  var dados = { titulo: "GTM RDO", corpo: "Você tem uma atualização." };
+  if (event.data) {
+    try { dados = event.data.json(); } catch (e) {
+      dados.corpo = event.data.text() || dados.corpo;
+    }
+  }
+  event.waitUntil(
+    self.registration.showNotification(dados.titulo || "GTM RDO", {
+      body: dados.corpo || "",
+      icon: "./icon-192.png",
+      badge: "./icon-192.png",
+      tag: "gtm-rdo-devolucao", // uma notificação nova substitui a anterior, não empilha
+      data: { url: "./" }
+    })
+  );
+});
+
+// Clique na notificação: foca uma aba já aberta do app, ou abre uma nova.
+self.addEventListener("notificationclick", function (event) {
+  event.notification.close();
+  var url = (event.notification.data && event.notification.data.url) || "./";
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (lista) {
+      for (var i = 0; i < lista.length; i++) {
+        if (lista[i].url.indexOf(url.replace("./", "")) !== -1 && "focus" in lista[i]) {
+          return lista[i].focus();
+        }
+      }
+      if (clients.openWindow) return clients.openWindow(url);
     })
   );
 });
