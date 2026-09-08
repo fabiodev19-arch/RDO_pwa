@@ -1,7 +1,7 @@
 // ============================================================================
-// GTM RDO — testes do convite de notificação (lado JS do PWA)
+// GTM RDO — testes do lado JS do PWA
 // ============================================================================
-// COMO RODAR:   node testes_pwa_push.js
+// COMO RODAR:   node testes_pwa.js
 //
 // Sem framework, sem package.json, sem dependência: só Node e o index.html.
 // É de propósito -- o projeto não tem build step e não vai ganhar um por causa
@@ -198,6 +198,40 @@ checar("index.html revalida quando o app volta a ficar visível",
 checar("a revalidação chama verificarAtividadesDevolvidas",
   /function revalidarDevolvidas\(\)[\s\S]{0,600}verificarAtividadesDevolvidas\(\)/.test(htmlCompleto),
   "revalidarDevolvidas não chama quem busca as devolvidas");
+
+// ---------------------------------------------------------------------------
+// "Enviou, acabou" — só a devolução reabre o apontamento
+// ---------------------------------------------------------------------------
+// Regra do Fábio (08/09). Quem garante é o servidor
+// (trava_edicao_pos_envio.sql): ele congela o que já foi enviado e IGNORA a
+// alteração, em vez de recusar a sincronização inteira -- o RDO do dia não
+// pode ficar preso no aparelho por causa de um apontamento travado.
+//
+// Justamente por isso as checagens do app são indispensáveis: sem elas o
+// operador editaria, o servidor ignoraria em silêncio, e o aparelho seguiria
+// mostrando o valor novo enquanto o banco guarda o antigo. O pior tipo de bug
+// é o que não aparece.
+console.log("\n--- enviou, acabou: trava de edição ---\n");
+
+checar("bloqueia reabrir relatório já enviado sem devolução",
+  /function confirmarReabrir[\s\S]{0,400}relatorioJaEnviado\(r\)\s*&&\s*!relatorioTemDevolucao\(r\)/.test(htmlCompleto),
+  "confirmarReabrir não checa o estado antes de reabrir");
+
+checar("bloqueia remover apontamento já enviado sem devolução",
+  /del-ativ[\s\S]{0,900}relatorioJaEnviado\(r\)\s*&&\s*!atividadeFoiDevolvida\(/.test(htmlCompleto),
+  "o botão de remover não checa se o apontamento já foi enviado");
+
+checar("relatório com devolução PODE ser reaberto (senão a correção fica impossível)",
+  /function relatorioTemDevolucao\(r\)[\s\S]{0,400}relatorio_uuid_dispositivo === r\.id/.test(htmlCompleto),
+  "relatorioTemDevolucao não casa o relatório com a lista de devolvidas");
+
+checar("a trava só vale depois de sincronizar (rascunho continua livre)",
+  /function relatorioJaEnviado\(r\)[\s\S]{0,200}relatorioSincronizado\(r\)/.test(htmlCompleto),
+  "relatorioJaEnviado não considera o estado de sincronização");
+
+checar("avisa o operador quando o servidor ignora alterações",
+  /dados\.congeladas[\s\S]{0,300}remocoes_negadas[\s\S]{0,400}showToast/.test(htmlCompleto),
+  "a resposta da sincronização não é lida, ou o aviso não aparece");
 
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
