@@ -229,7 +229,17 @@ END;
 $$;
 
 -- A trava por fora, par da verificação de auth.uid() por dentro.
-REVOKE ALL ON FUNCTION sincronizar_relatorio_rdo(jsonb) FROM PUBLIC;
+--
+-- O `, anon` é obrigatório e não é redundância: neste banco o Supabase concede
+-- EXECUTE a anon EXPLICITAMENTE (via ALTER DEFAULT PRIVILEGES no schema
+-- public), então revogar só de PUBLIC deixaria a função aberta pra chave anon
+-- e o script ainda diria "Success". Descoberto ao aplicar o revisao_rpcs.sql
+-- em 08/09 -- ver BOAS_PRATICAS.md §2.
+--
+-- Aqui a trava de fora importa menos que nas outras funções, porque o corpo já
+-- barra com auth.uid() IS NULL. Mas é ela que faz o PostgREST recusar antes de
+-- executar, e é ela que a bateria mede.
+REVOKE ALL ON FUNCTION sincronizar_relatorio_rdo(jsonb) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION sincronizar_relatorio_rdo(jsonb) TO authenticated;
 
 -- ============================================================================
