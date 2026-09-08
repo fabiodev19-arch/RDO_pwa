@@ -105,6 +105,8 @@ BEGIN
     'atividades.motivo_devolucao',
     'atividades.revisado_por',
     'atividades.revisado_em',
+    'atividades.excluido_em',
+    'atividades.excluido_por',
     'relatorios.criado_por'
   ]
   LOOP
@@ -224,6 +226,8 @@ DECLARE
   v_qtd       int;
   v_corte     boolean;
   v_pq        text;
+  v_excluido_em   timestamptz;
+  v_payload_cheio jsonb;
 BEGIN
   -- criado_por tem FK pra auth.users, então precisamos de um usuário real.
   -- Não criamos um (mexer em auth.users é outro departamento) -- pegamos o
@@ -261,7 +265,10 @@ BEGIN
       'id', v_ativ_uuid,
       'tipo_atividade', 'Construção de Aterro',
       'observacao', 'TESTE AUTOMATIZADO - NAO DEVE PERSISTIR',
-      'profundidade_cm', 30
+      'profundidade_cm', 30,
+      -- A foto existe no payload por causa do C10: ela é a evidência que a
+      -- exclusão apagava junto com a atividade, e o Storage não tem histórico.
+      'fotos', jsonb_build_array(jsonb_build_object('storage_path','teste/evidencia-automatizada.jpg'))
     ))
   );
 
@@ -428,13 +435,56 @@ BEGIN
       (SELECT motivo_devolucao IS NULL FROM atividades WHERE id = v_ativ_id));
   END IF;
 
-  -- C10 -- atividade apagada no aparelho some do banco (e só ela)
+  -- Guardado ANTES de esvaziar: é ele que devolve a atividade no fim do C10,
+  -- para testar que recriar no aparelho limpa a marca de remoção.
+  v_payload_cheio := v_payload;
+
+  -- C10 -- atividade removida no aparelho é MARCADA, não apagada
+  --
+  -- Este teste já afirmou o contrário ("é removida do banco"). Mudou porque o
+  -- comportamento mudou de propósito, em 08/09: apagar de verdade deixava o
+  -- operador sumir com um apontamento devolvido ou já validado, sem rastro
+  -- nenhum -- nem o motivo da devolução, nem as fotos de evidência.
+  -- Ver exclusao_marcada_atividade.sql.
   v_payload := jsonb_set(v_payload, '{atividades}', '[]'::jsonb);
   PERFORM sincronizar_relatorio_rdo(v_payload);
-  PERFORM pg_temp.checar('C', 'atividade removida no aparelho é removida do banco',
-    NOT EXISTS (SELECT 1 FROM atividades WHERE relatorio_id = v_rel_id));
+
+  PERFORM pg_temp.checar('C', 'atividade removida no aparelho NÃO é apagada do banco',
+    EXISTS (SELECT 1 FROM atividades WHERE id = v_ativ_id));
+  PERFORM pg_temp.checar('C', 'atividade removida fica marcada com excluido_em',
+    (SELECT excluido_em IS NOT NULL FROM atividades WHERE id = v_ativ_id));
+  PERFORM pg_temp.checar('C', 'a remoção registra quem sincronizou',
+    (SELECT excluido_por = v_uid FROM atividades WHERE id = v_ativ_id));
   PERFORM pg_temp.checar('C', 'o relatório em si continua lá',
     EXISTS (SELECT 1 FROM relatorios WHERE id = v_rel_id));
+  PERFORM pg_temp.checar('C', 'PWA não cobra correção de atividade que o operador removeu',
+    NOT (verificar_atividades_devolvidas() @>
+         jsonb_build_array(jsonb_build_object('atividade_id', v_ativ_uuid))));
+  -- O que mais importa nesta mudança: a evidência não se perde. Antes, apagar
+  -- a atividade levava as fotos junto, e o arquivo no Storage ficava órfão sem
+  -- nada apontando pra ele -- perda de dado sem volta.
+  PERFORM pg_temp.checar('C', 'as fotos da atividade removida sobrevivem',
+    EXISTS (SELECT 1 FROM evidencias_fotos WHERE atividade_id = v_ativ_id));
+  PERFORM pg_temp.checar('C', 'o motivo da devolução sobrevive à remoção',
+    (SELECT motivo_devolucao IS NOT NULL OR status_revisao <> 'devolvido'
+       FROM atividades WHERE id = v_ativ_id));
+  PERFORM pg_temp.checar('C', 'painel enxerga a atividade removida',
+    EXISTS (
+      SELECT 1 FROM jsonb_array_elements(listar_relatorios_painel(NULL,NULL,NULL,NULL,100)) rel,
+                    jsonb_array_elements(rel->'atividades') ativ
+       WHERE (rel->>'id')::uuid = v_rel_id AND ativ->>'excluido_em' IS NOT NULL));
+
+  -- Sincronizar de novo não pode reescrever a data da remoção, senão o painel
+  -- passa a dizer "removido agora" para algo removido semana passada.
+  SELECT excluido_em INTO v_excluido_em FROM atividades WHERE id = v_ativ_id;
+  PERFORM sincronizar_relatorio_rdo(v_payload);
+  PERFORM pg_temp.checar('C', 'nova sincronização não reescreve a data da remoção',
+    (SELECT excluido_em = v_excluido_em FROM atividades WHERE id = v_ativ_id));
+
+  -- E se o operador se arrepender e recriar o apontamento, a marca some.
+  PERFORM sincronizar_relatorio_rdo(v_payload_cheio);
+  PERFORM pg_temp.checar('C', 'recriar a atividade no aparelho limpa a marca de remoção',
+    (SELECT excluido_em IS NULL AND excluido_por IS NULL FROM atividades WHERE id = v_ativ_id));
 
   -- C11 -- inscrição de push
   PERFORM salvar_push_subscription('https://exemplo.invalido/push-teste', 'p256-a', 'auth-a');
@@ -593,6 +643,49 @@ EXCEPTION WHEN OTHERS THEN
   PERFORM pg_temp.checar('D', 'sincronizar um RDO completo continua funcionando',
     false, SQLERRM);
 END $secao_d3$;
+
+-- A marcação de exclusão (08/09) mexeu no mesmo UPDATE/DELETE que trata as
+-- atividades vivas. Estes dois cobram que ela não tenha estragado o caminho
+-- normal, que é o que roda todo dia: sincronizar um RDO com atividades e
+-- reenviá-lo depois.
+DO $secao_d4$
+DECLARE
+  v_uid uuid; v_uuid uuid := gen_random_uuid(); v_ativ uuid := gen_random_uuid();
+  v_pay jsonb; v_rel_id uuid; v_vivas int; v_fotos int;
+BEGIN
+  SELECT id INTO v_uid FROM auth.users ORDER BY created_at LIMIT 1;
+  IF v_uid IS NULL THEN RETURN; END IF;
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub',v_uid,'role','authenticated','aal','aal1')::text, true);
+
+  v_pay := jsonb_build_object(
+    'uuid_dispositivo', v_uuid,
+    'cliente','Colheita','contrato','ARAUCO','faena','TESTE REGRESSAO EXCLUSAO',
+    'tipo_estrada','Acesso','equipe_frente','GTM','fazenda','Elo Dourado 2',
+    'data','2026-09-08','encarregado','Elson','supervisor','Valmir',
+    'tecnico_arauco','Edwilson','supervisor_arauco','Luciano','concluidoEm', now(),
+    'atividades', jsonb_build_array(jsonb_build_object(
+      'id', v_ativ, 'tipo_atividade','Limpeza de valeta','comprimento_m',100,
+      'fotos', jsonb_build_array(jsonb_build_object('storage_path','teste/regressao.jpg')))));
+
+  PERFORM sincronizar_relatorio_rdo(v_pay);
+  PERFORM sincronizar_relatorio_rdo(v_pay);  -- reenvio do mesmo conteúdo
+
+  SELECT id INTO v_rel_id FROM relatorios WHERE uuid_dispositivo = v_uuid;
+  SELECT count(*) INTO v_vivas FROM atividades
+   WHERE relatorio_id = v_rel_id AND excluido_em IS NULL;
+  SELECT count(*) INTO v_fotos FROM evidencias_fotos f
+    JOIN atividades a ON a.id = f.atividade_id WHERE a.relatorio_id = v_rel_id;
+
+  PERFORM pg_temp.checar('D', 'atividade que continua no aparelho NÃO é marcada como excluída',
+    v_vivas = 1, 'vivas = ' || v_vivas);
+  PERFORM pg_temp.checar('D', 'reenvio não duplica as fotos da atividade viva',
+    v_fotos = 1, 'fotos = ' || v_fotos);
+
+  PERFORM set_config('request.jwt.claims','',true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.checar('D','regressão do caminho normal de sincronização', false, SQLERRM);
+END $secao_d4$;
 
 -- ============================================================================
 -- RESULTADO
