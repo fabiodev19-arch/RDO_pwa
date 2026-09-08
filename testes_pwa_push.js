@@ -152,6 +152,53 @@ checar("o clique do botão chama pedirPermissaoEInscreverPush",
   /btn-push-ativar[\s\S]{0,600}pedirPermissaoEInscreverPush\(\)/.test(htmlCompleto),
   "o handler do botão não chama a função que inscreve");
 
+// ---------------------------------------------------------------------------
+// Devolução aparecer sem o operador recarregar o app
+// ---------------------------------------------------------------------------
+// Relatado no primeiro teste real de push (08/09): a notificação chegou, o
+// operador tocou nela, o app veio pra frente -- e a devolução não estava lá.
+// Só aparecia recarregando na mão.
+//
+// A causa: o service worker chama focus() na janela existente, e focar não
+// recarrega nem avisa a página. A checagem de devolvidas só rodava no login.
+//
+// Recarregar seria a correção errada: perderia rascunho de RDO não salvo. O
+// certo é avisar a página, que só rebusca as devolvidas.
+//
+// Estes testes cobrem os dois lados do contrato, que moram em ARQUIVOS
+// DIFERENTES -- é exatamente o tipo de ligação que se quebra em silêncio.
+console.log("\n--- devolvida aparece sem recarregar ---\n");
+
+const sw = fs.readFileSync(path.join(__dirname, "sw.js"), "utf8");
+
+checar("sw.js avisa a página ao clicar na notificação",
+  /notificationclick[\s\S]{0,1200}postMessage\(\s*\{\s*tipo:\s*["']notificacao-clicada["']/.test(sw),
+  "o handler de notificationclick não faz postMessage");
+
+checar("sw.js continua usando focus(), não reload (não perder rascunho)",
+  /notificationclick[\s\S]{0,1500}\.focus\(\)/.test(sw) &&
+  !/notificationclick[\s\S]{0,1500}location\.reload/.test(sw),
+  "o handler recarrega a página em vez de focar");
+
+checar("index.html escuta a mensagem do service worker",
+  /serviceWorker\.addEventListener\(\s*["']message["']/.test(htmlCompleto) &&
+  htmlCompleto.indexOf('"notificacao-clicada"') !== -1,
+  "não há listener de message, ou o nome do evento diverge do sw.js");
+
+checar("o nome do evento é o MESMO nos dois arquivos",
+  sw.indexOf("notificacao-clicada") !== -1 &&
+  htmlCompleto.indexOf("notificacao-clicada") !== -1,
+  "sw.js e index.html usam nomes diferentes -- a mensagem nunca casaria");
+
+checar("index.html revalida quando o app volta a ficar visível",
+  /addEventListener\(\s*["']visibilitychange["']/.test(htmlCompleto) &&
+  /visibilityState\s*===\s*["']visible["']/.test(htmlCompleto),
+  "sem listener de visibilitychange: reabrir o app não revalidaria");
+
+checar("a revalidação chama verificarAtividadesDevolvidas",
+  /function revalidarDevolvidas\(\)[\s\S]{0,600}verificarAtividadesDevolvidas\(\)/.test(htmlCompleto),
+  "revalidarDevolvidas não chama quem busca as devolvidas");
+
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
 process.exit(erros ? 1 : 0);

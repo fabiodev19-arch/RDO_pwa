@@ -5,7 +5,7 @@
 // internet — inclusive na primeira tela, sem precisar já ter sido aberto
 // online antes de ir a campo.
 
-var CACHE_NAME = "gtm-rdo-v23";
+var CACHE_NAME = "gtm-rdo-v24";
 var APP_SHELL = [
   "./",
   "./index.html",
@@ -85,9 +85,19 @@ self.addEventListener("notificationclick", function (event) {
     clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (lista) {
       for (var i = 0; i < lista.length; i++) {
         if (lista[i].url.indexOf(url.replace("./", "")) !== -1 && "focus" in lista[i]) {
+          // Avisar é obrigatório aqui: focus() traz a janela pra frente mas não
+          // recarrega nada, então o app continuava mostrando a tela de antes e
+          // a devolução só aparecia se o operador atualizasse na mão.
+          //
+          // Recarregar seria pior -- perderia rascunho não salvo do RDO em
+          // preenchimento. A mensagem faz a página só rebuscar as devolvidas.
+          if (lista[i].postMessage) {
+            lista[i].postMessage({ tipo: "notificacao-clicada" });
+          }
           return lista[i].focus();
         }
       }
+      // Nenhuma janela aberta: abrir do zero já busca as devolvidas no login.
       if (clients.openWindow) return clients.openWindow(url);
     })
   );

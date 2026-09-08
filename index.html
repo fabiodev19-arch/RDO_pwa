@@ -573,6 +573,42 @@
     }).catch(function(){ /* offline -- mantém o que já sabia */ });
   }
 
+  // Revalida as devolvidas quando o app volta pra frente.
+  //
+  // Por que precisa existir: até 08/09 a checagem só rodava no login. Quem
+  // tocava na notificação via o app abrir com a tela do jeito que estava --
+  // sem a devolução -- e precisava recarregar na mão pra ela aparecer. O
+  // service worker apenas FOCA a janela existente (é o certo, senão perderia
+  // rascunho não salvo), e focar não recarrega nada.
+  //
+  // Cobre os dois caminhos: tocar na notificação e simplesmente reabrir o app.
+  var _ultimaChecagemDevolvidas = 0;
+  function revalidarDevolvidas(){
+    if (!supabaseClient || App.tela === "login") return;
+    // Trava de 10s: visibilitychange dispara a cada troca de aba, e não faz
+    // sentido bater no banco a cada alternância.
+    var agora = Date.now();
+    if (agora - _ultimaChecagemDevolvidas < 10000) return;
+    _ultimaChecagemDevolvidas = agora;
+    verificarAtividadesDevolvidas();
+  }
+
+  document.addEventListener("visibilitychange", function(){
+    if (document.visibilityState === "visible") revalidarDevolvidas();
+  });
+
+  // O clique na notificação avisa por mensagem, porque nesse caso o app pode
+  // JÁ estar visível (aparelho desbloqueado, app aberto atrás) -- aí o
+  // visibilitychange não dispara e sozinho ele não bastaria.
+  if ("serviceWorker" in navigator){
+    navigator.serviceWorker.addEventListener("message", function(evento){
+      if (evento && evento.data && evento.data.tipo === "notificacao-clicada"){
+        _ultimaChecagemDevolvidas = 0; // veio de ação do usuário: não segura
+        revalidarDevolvidas();
+      }
+    });
+  }
+
   // Chave pública VAPID -- autentica o navegador junto ao serviço de push.
   // A privada correspondente fica só no servidor (função que envia o push).
   var VAPID_PUBLIC_KEY = "BKkl9wxNT0Al-tQPKcEfbbwLhEcawiZ-p5GDaSBNYaik2FBWmpINKWeI_EddAannk-KHN1ra0NqzN8_KIAD6Xt4";
