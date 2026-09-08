@@ -180,6 +180,21 @@
   }
   html[data-theme="light"] .btn-sync-agora{color:var(--brand-dark);}
 
+  /* Convite para ligar as notificações. Discreto de propósito: quem abre o app
+     está indo preencher RDO, não configurar aparelho. Some sozinho assim que a
+     permissão é decidida -- concedida ou negada. */
+  .push-convite{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:10px 12px; margin-bottom:14px;
+  }
+  .push-convite-texto{font-size:12.5px; color:var(--text-dim); line-height:1.45;}
+  .btn-push-ativar{
+    background:none; border:none; color:var(--brand); font-weight:700; font-size:12.5px;
+    padding:2px 0; flex:0 0 auto; white-space:nowrap; cursor:pointer;
+  }
+  html[data-theme="light"] .btn-push-ativar{color:var(--brand-dark);}
+
   .devolvido-banner{
     background:var(--danger-bg); border:1px solid var(--danger); border-radius:var(--radius-sm);
     padding:12px 14px; margin-bottom:14px;
@@ -1326,15 +1341,54 @@
       showToast("Não foi possível obter a localização. Verifique a permissão de GPS.");
     }, { enableHighAccuracy:true, timeout:15000, maximumAge:60000 });
   }
+  // Convite para ativar as notificações. Só aparece enquanto a permissão está
+  // em "default" -- depois de decidida (concedida ou negada) some sozinho,
+  // porque insistir com quem já disse não é o caminho mais curto para o
+  // operador bloquear o site de vez.
+  //
+  // Por que precisa existir um botão, em vez de pedir sozinho ao entrar: os
+  // navegadores exigem que requestPermission() parta de um toque do usuário.
+  // Chamado no carregamento, o pedido é ignorado (e, no Chrome, ainda conta
+  // contra o site). Sem este botão a permissão nunca sairia de "default" e
+  // nenhuma inscrição seria criada -- era exatamente esse o estado até 08/09.
+  function renderConvitePush(){
+    if (!("Notification" in window)) return "";
+    if (Notification.permission !== "default") return "";
+
+    // No iPhone o PushManager só existe com o PWA aberto pela tela de início
+    // (iOS 16.4+). Pelo Safari na URL ele nem aparece -- então em vez de um
+    // botão que não faria nada, a orientação de instalar o app.
+    var ehIOS = /iphone|ipad|ipod/i.test(navigator.userAgent || "");
+    var instalado = window.matchMedia && window.matchMedia("(display-mode: standalone)").matches;
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)){
+      if (ehIOS && !instalado && !window.navigator.standalone){
+        return '<div class="push-convite">'+
+          '<span class="push-convite-texto">Para receber aviso de apontamento devolvido, '+
+          'adicione este app à Tela de Início (menu Compartilhar do Safari).</span>'+
+        '</div>';
+      }
+      return "";
+    }
+
+    return '<div class="push-convite">'+
+      '<span class="push-convite-texto">Receber aviso quando o escritório devolver um apontamento?</span>'+
+      '<button class="btn-push-ativar" id="btn-push-ativar">Ativar avisos</button>'+
+    '</div>';
+  }
+
   function renderTelaLista(){
     if (!App.relatorios.length){
-      return '<div class="empty-state">'+boxIcon()+
+      // O convite entra aqui também: quem acabou de logar ainda não tem
+      // relatório nenhum, e é justamente a melhor hora de ativar o aviso.
+      return '<div class="container">'+renderConvitePush()+'</div>'+
+        '<div class="empty-state">'+boxIcon()+
         '<h3>Nenhum relatório ainda</h3>'+
         '<p>Toque em "Novo Relatório" para começar a preencher o RDO da frente de trabalho.</p></div>';
     }
     var ordenados = App.relatorios.slice().sort(function(a,b){ return (b.criadoEm||"").localeCompare(a.criadoEm||""); });
     var pendentes = ordenados.filter(relatorioPendente).length;
     var html = '<div class="container">';
+    html += renderConvitePush();
     if (App.atividadesDevolvidas && App.atividadesDevolvidas.length){
       html += '<div class="devolvido-banner">'+
         '<div class="devolvido-banner-titulo">'+alertIcon()+' '+App.atividadesDevolvidas.length+' atividade(s) devolvida(s) para correção</div>'+
@@ -1379,6 +1433,26 @@
     return html;
   }
   function ligarEventosLista(){
+    var btnPush = document.getElementById("btn-push-ativar");
+    if (btnPush) btnPush.onclick = function(){
+      btnPush.disabled = true;
+      btnPush.textContent = "Ativando...";
+      pedirPermissaoEInscreverPush().then(function(ok){
+        if (ok){
+          showToast("Avisos ativados neste aparelho.");
+        } else if (window.Notification && Notification.permission === "denied"){
+          // Reabrir o pedido não adianta: o navegador só devolve "denied"
+          // sem perguntar nada. Só o próprio usuário reverte, nas permissões
+          // do site -- então é isso que a mensagem precisa dizer.
+          showToast("Avisos bloqueados. Libere nas permissões do site, no navegador.");
+        } else {
+          showToast("Não foi possível ativar os avisos agora.");
+        }
+        // Concedida ou negada, a permissão saiu de "default" e o convite some.
+        // Se falhou por outro motivo (rede, por exemplo), o botão volta.
+        render();
+      });
+    };
     document.querySelectorAll(".devolvido-item").forEach(function(btn){
       btn.onclick = function(){
         App.atualId = btn.getAttribute("data-rel");
