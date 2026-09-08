@@ -439,6 +439,64 @@ BEGIN
   -- para testar que recriar no aparelho limpa a marca de remoção.
   v_payload_cheio := v_payload;
 
+  -- C9b -- ALTERNÂNCIA: painel devolve, campo corrige, painel pode de novo
+  --
+  -- Regra do Fábio (08/09): cada um faz a sua parte. Antes disto, o botão
+  -- "Devolver" continuava ativo depois de devolver, e clicar de novo não
+  -- mudava estado nenhum -- só disparava mais uma notificação para o operador
+  -- sobre o mesmo pedido, o que em campo vira ruído e some com a confiança no
+  -- aviso. Ver trava_devolucao_alternada.sql.
+  PERFORM devolver_atividade_rdo(v_ativ_id, 'Primeira devolução');
+
+  BEGIN
+    PERFORM devolver_atividade_rdo(v_ativ_id, 'Insistindo sem o campo responder');
+    PERFORM pg_temp.checar('C', 'ALTERNÂNCIA: devolver duas vezes seguidas é recusado',
+      false, 'a segunda devolução passou -- a trava não está valendo');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'ALTERNÂNCIA: devolver duas vezes seguidas é recusado',
+      SQLERRM ILIKE '%aguardando%', SQLERRM);
+  END;
+
+  -- A tentativa recusada não pode ter sobrescrito o motivo da devolução real.
+  PERFORM pg_temp.checar('C', 'devolução recusada não altera o motivo já gravado',
+    (SELECT motivo_devolucao = 'Primeira devolução' FROM atividades WHERE id = v_ativ_id),
+    (SELECT coalesce(motivo_devolucao,'NULL') FROM atividades WHERE id = v_ativ_id));
+
+  -- O campo faz a parte dele: corrige e reenvia.
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+  v_payload := jsonb_set(v_payload, '{atividades,0,profundidade_cm}', '52'::jsonb);
+  PERFORM sincronizar_relatorio_rdo(v_payload);
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+
+  -- E agora o painel pode devolver de novo.
+  BEGIN
+    PERFORM devolver_atividade_rdo(v_ativ_id, 'Ainda não confere');
+    PERFORM pg_temp.checar('C', 'ALTERNÂNCIA: depois da correção, devolver volta a ser permitido', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'ALTERNÂNCIA: depois da correção, devolver volta a ser permitido',
+      false, SQLERRM);
+  END;
+
+  -- Validar uma devolvida continua permitido de propósito: é o revisor mudando
+  -- de ideia, não ação repetida -- e validar não notifica ninguém.
+  BEGIN
+    PERFORM validar_atividade_rdo(v_ativ_id);
+    PERFORM pg_temp.checar('C', 'validar uma atividade devolvida continua permitido', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'validar uma atividade devolvida continua permitido', false, SQLERRM);
+  END;
+
+  -- E devolver uma validada também: corrige aprovação equivocada, e o estado
+  -- anterior não era 'devolvido', então a alternância segue respeitada.
+  BEGIN
+    PERFORM devolver_atividade_rdo(v_ativ_id, 'Aprovei por engano');
+    PERFORM pg_temp.checar('C', 'devolver uma atividade validada continua permitido', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'devolver uma atividade validada continua permitido', false, SQLERRM);
+  END;
+
   -- C10 -- atividade removida no aparelho é MARCADA, não apagada
   --
   -- Este teste já afirmou o contrário ("é removida do banco"). Mudou porque o
