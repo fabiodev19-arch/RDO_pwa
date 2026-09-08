@@ -236,10 +236,26 @@
   }
   html[data-theme="light"] .add-dashed{color:var(--brand-dark);}
 
-  .eq-pair{display:flex; gap:8px; align-items:center; margin-bottom:8px;}
+  /* align-items:flex-end para o X do "remover" ficar na linha dos campos, e
+     não no meio da altura que os rótulos passaram a ocupar. */
+  .eq-pair{display:flex; gap:8px; align-items:flex-end; margin-bottom:8px;}
   .eq-pair .fake-select{flex:1;}
-  .eq-pair .rm{background:none; border:none; color:var(--text-dim); flex:0 0 auto; padding:6px;}
+  .eq-pair .campo-rotulado{flex:1;}
+  .eq-pair .rm{background:none; border:none; color:var(--text-dim); flex:0 0 auto; padding:6px 6px 12px;}
   .eq-pair .rm svg{width:16px; height:16px;}
+
+  /* Rótulo fixo acima do campo.
+     Antes, o nome do campo vivia no placeholder (ou no texto do fake-select) e
+     SUMIA assim que havia valor. O Fábio esbarrou nisso ao corrigir um
+     apontamento devolvido: viu os valores preenchidos e não sabia mais qual
+     campo era qual. Placeholder serve para exemplo, não para rótulo -- ele
+     desaparece justamente na hora de conferir o que foi digitado. */
+  .campo-rotulado{min-width:0;}
+  .campo-rotulado > label{
+    display:block; font-size:11.5px; font-weight:600; color:var(--text-dim);
+    margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .campo-rotulado > input, .campo-rotulado > .fake-select{width:100%;}
 
   .maquina-card{
     background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
@@ -262,7 +278,15 @@
     padding:12px; margin-bottom:9px;
   }
   .maquina-detalhada-card .row-2{margin-bottom:9px; display:flex; gap:8px;}
-  .maquina-detalhada-card .row-2 > input{margin-bottom:0;}
+  /* O segundo seletor cobre o campo agora envolvido por .campo-rotulado --
+     sem ele o input volta a ter margem embaixo e desalinha a linha. */
+  .maquina-detalhada-card .row-2 > input,
+  .maquina-detalhada-card .row-2 > .campo-rotulado > input{margin-bottom:0;}
+  /* Espaçamento entre os campos rotulados que ficam sozinhos na linha: antes
+     vinha do margin-bottom do próprio .campo-solo, que agora está encapsulado. */
+  .maquina-detalhada-card > .campo-rotulado{margin-bottom:9px;}
+  .maquina-detalhada-card > .campo-rotulado > input,
+  .maquina-detalhada-card > .campo-rotulado > textarea{margin-bottom:0;}
   .maquina-detalhada-card .campo-solo,
   .maquina-detalhada-card .campo-numerico-solo,
   .maquina-detalhada-card .campo-texto-solo{
@@ -1626,6 +1650,19 @@
     return '<div class="app-footer"><button class="btn btn-primary" id="btn-voltar-secoes">Voltar às seções</button></div>';
   }
 
+  // Põe um rótulo fixo acima de um campo já montado.
+  //
+  // Existe porque os cards de equipamento e máquina não usam campoHtml() -- o
+  // layout deles é em grade, com vários campos por linha -- e por isso vinham
+  // sem rótulo nenhum, contando com o placeholder. O problema é que
+  // placeholder some quando há valor: ao reabrir um apontamento devolvido para
+  // corrigir, via-se "12,5" e "3,20" sem saber qual era comprimento e qual era
+  // largura. Rótulo é para identificar o campo; placeholder, para exemplificar
+  // o formato. Os dois papéis não cabem no mesmo texto.
+  function rotulado(rotulo, htmlCampo){
+    return '<div class="campo-rotulado"><label>'+esc(rotulo)+'</label>'+htmlCampo+'</div>';
+  }
+
   function campoHtml(campo, valor){
     var reqStar = campo.req ? ' <span class="req">*</span>' : '';
     var label = '<label>'+esc(campo.l)+reqStar+'</label>';
@@ -2203,12 +2240,16 @@
       (a.maquinas||[]).forEach(function(m, idx){
         html += '<div class="maquina-card">'+
           '<div class="row-2">'+
-            '<div class="fake-select" data-maqidx="'+idx+'" data-campo="equipamento"><span class="'+(m.equipamento?"val":"placeholder")+'">'+esc(m.equipamento||"Equipamento")+'</span>'+chevronIcon()+'</div>'+
-            '<div class="fake-select" data-maqidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Operador")+'</span>'+chevronIcon()+'</div>'+
+            rotulado("Equipamento",
+              '<div class="fake-select" data-maqidx="'+idx+'" data-campo="equipamento"><span class="'+(m.equipamento?"val":"placeholder")+'">'+esc(m.equipamento||"Selecionar")+'</span>'+chevronIcon()+'</div>')+
+            rotulado("Operador",
+              '<div class="fake-select" data-maqidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Selecionar")+'</span>'+chevronIcon()+'</div>')+
           '</div>'+
           '<div class="row-2">'+
-            '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="'+phDinamico(r?r.cliente:"",a.tipo_atividade,"hora_inicial","Hora inicial")+'" data-maqidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">'+
-            '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="'+phDinamico(r?r.cliente:"",a.tipo_atividade,"hora_final","Hora final")+'" data-maqidx="'+idx+'" data-campo="hora_final" value="'+escAttr(m.hora_final==null?"":formatarNumeroExibicao(m.hora_final))+'">'+
+            rotulado("Hora inicial",
+              '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="'+phDinamico(r?r.cliente:"",a.tipo_atividade,"hora_inicial","Hora inicial")+'" data-maqidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">')+
+            rotulado("Hora final",
+              '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="'+phDinamico(r?r.cliente:"",a.tipo_atividade,"hora_final","Hora final")+'" data-maqidx="'+idx+'" data-campo="hora_final" value="'+escAttr(m.hora_final==null?"":formatarNumeroExibicao(m.hora_final))+'">')+
           '</div>'+
           '<button class="rm-maquina" data-maqidx="'+idx+'" data-action="rm-maquina">'+closeXIcon()+' Remover máquina</button>'+
         '</div>';
@@ -2230,22 +2271,33 @@
       (a.maquinas||[]).forEach(function(m, idx){
         html += '<div class="maquina-detalhada-card">'+
           '<div class="row-2">'+
-            '<div class="fake-select" data-mdidx="'+idx+'" data-campo="equipamento"><span class="'+(m.equipamento?"val":"placeholder")+'">'+esc(m.equipamento||"Equipamento")+'</span>'+chevronIcon()+'</div>'+
-            '<div class="fake-select" data-mdidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Operador")+'</span>'+chevronIcon()+'</div>'+
+            rotulado("Equipamento",
+              '<div class="fake-select" data-mdidx="'+idx+'" data-campo="equipamento"><span class="'+(m.equipamento?"val":"placeholder")+'">'+esc(m.equipamento||"Selecionar")+'</span>'+chevronIcon()+'</div>')+
+            rotulado("Operador",
+              '<div class="fake-select" data-mdidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Selecionar")+'</span>'+chevronIcon()+'</div>')+
           '</div>'+
-          '<input class="campo-solo campo-texto-solo" type="text" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"up","UP (Talhão)")+'" data-mdidx="'+idx+'" data-campo="up" value="'+escAttr(m.up||"")+'">'+
-          '<input class="campo-solo campo-texto-solo" type="text" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"trecho","Trecho")+'" data-mdidx="'+idx+'" data-campo="trecho" value="'+escAttr(m.trecho||"")+'">'+
-          '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"quantidade","Quantidade")+'" data-mdidx="'+idx+'" data-campo="quantidade" value="'+escAttr(m.quantidade==null?"":formatarNumeroExibicao(m.quantidade))+'">'+
+          rotulado(phDinamico(clienteAtual,a.tipo_atividade,"up","UP (Talhão)"),
+            '<input class="campo-solo campo-texto-solo" type="text" data-mdidx="'+idx+'" data-campo="up" value="'+escAttr(m.up||"")+'">')+
+          rotulado(phDinamico(clienteAtual,a.tipo_atividade,"trecho","Trecho"),
+            '<input class="campo-solo campo-texto-solo" type="text" data-mdidx="'+idx+'" data-campo="trecho" value="'+escAttr(m.trecho||"")+'">')+
+          rotulado(phDinamico(clienteAtual,a.tipo_atividade,"quantidade","Quantidade"),
+            '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="quantidade" value="'+escAttr(m.quantidade==null?"":formatarNumeroExibicao(m.quantidade))+'">')+
           '<div class="row-2">'+
-            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"comprimento_m","Comprimento (m)")+'" data-mdidx="'+idx+'" data-campo="comprimento_m" value="'+escAttr(m.comprimento_m==null?"":formatarNumeroExibicao(m.comprimento_m))+'">'+
-            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"largura_m","Largura (m)")+'" data-mdidx="'+idx+'" data-campo="largura_m" value="'+escAttr(m.largura_m==null?"":formatarNumeroExibicao(m.largura_m))+'">'+
+            rotulado(phDinamico(clienteAtual,a.tipo_atividade,"comprimento_m","Comprimento (m)"),
+              '<input class="campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="comprimento_m" value="'+escAttr(m.comprimento_m==null?"":formatarNumeroExibicao(m.comprimento_m))+'">')+
+            rotulado(phDinamico(clienteAtual,a.tipo_atividade,"largura_m","Largura (m)"),
+              '<input class="campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="largura_m" value="'+escAttr(m.largura_m==null?"":formatarNumeroExibicao(m.largura_m))+'">')+
           '</div>'+
-          '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"profundidade_cm","Profundidade (cm)")+'" data-mdidx="'+idx+'" data-campo="profundidade_cm" value="'+escAttr(m.profundidade_cm==null?"":formatarNumeroExibicao(m.profundidade_cm))+'">'+
+          rotulado(phDinamico(clienteAtual,a.tipo_atividade,"profundidade_cm","Profundidade (cm)"),
+            '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="profundidade_cm" value="'+escAttr(m.profundidade_cm==null?"":formatarNumeroExibicao(m.profundidade_cm))+'">')+
           '<div class="row-2">'+
-            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"hora_inicial","H. inicial")+'" data-mdidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">'+
-            '<input class="campo-numerico-solo" type="text" inputmode="decimal" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"hora_final","H. final")+'" data-mdidx="'+idx+'" data-campo="hora_final" value="'+escAttr(m.hora_final==null?"":formatarNumeroExibicao(m.hora_final))+'">'+
+            rotulado(phDinamico(clienteAtual,a.tipo_atividade,"hora_inicial","H. inicial"),
+              '<input class="campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">')+
+            rotulado(phDinamico(clienteAtual,a.tipo_atividade,"hora_final","H. final"),
+              '<input class="campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="hora_final" value="'+escAttr(m.hora_final==null?"":formatarNumeroExibicao(m.hora_final))+'">')+
           '</div>'+
-          '<textarea class="campo-solo campo-texto-solo" placeholder="'+phDinamico(clienteAtual,a.tipo_atividade,"observacao","Observação")+'" data-mdidx="'+idx+'" data-campo="observacao">'+esc(m.observacao||"")+'</textarea>'+
+          rotulado(phDinamico(clienteAtual,a.tipo_atividade,"observacao","Observação"),
+            '<textarea class="campo-solo campo-texto-solo" data-mdidx="'+idx+'" data-campo="observacao">'+esc(m.observacao||"")+'</textarea>')+
           '<button class="rm-maquina" data-mdidx="'+idx+'" data-action="rm-maquina-detalhada">'+closeXIcon()+' Remover</button>'+
         '</div>';
       });
@@ -2265,8 +2317,10 @@
       html += '<div class="section-title">Equipamentos utilizados</div>';
       (a.equipamentos||[]).forEach(function(eq, idx){
         html += '<div class="eq-pair">'+
-          '<div class="fake-select" data-eqidx="'+idx+'" data-campo="equipamento"><span class="'+(eq.equipamento?"val":"placeholder")+'">'+esc(eq.equipamento||"Equipamento")+'</span>'+chevronIcon()+'</div>'+
-          '<div class="fake-select" data-eqidx="'+idx+'" data-campo="operador"><span class="'+(eq.operador?"val":"placeholder")+'">'+esc(eq.operador||"Operador")+'</span>'+chevronIcon()+'</div>'+
+          rotulado("Equipamento",
+            '<div class="fake-select" data-eqidx="'+idx+'" data-campo="equipamento"><span class="'+(eq.equipamento?"val":"placeholder")+'">'+esc(eq.equipamento||"Selecionar")+'</span>'+chevronIcon()+'</div>')+
+          rotulado("Operador",
+            '<div class="fake-select" data-eqidx="'+idx+'" data-campo="operador"><span class="'+(eq.operador?"val":"placeholder")+'">'+esc(eq.operador||"Selecionar")+'</span>'+chevronIcon()+'</div>')+
           '<button class="rm" data-eqidx="'+idx+'" data-action="rm-eq">'+closeXIcon()+'</button>'+
         '</div>';
       });

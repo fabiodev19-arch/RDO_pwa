@@ -281,6 +281,42 @@ checar("RDO sincronizado antes desta versão também fica protegido",
   /carregarRelatoriosSalvos[\s\S]{0,400}marcarEnviadasRetroativo\(\)/.test(htmlCompleto),
   "sem marcação retroativa, o que já está no aparelho segue destravado");
 
+// ---------------------------------------------------------------------------
+// Rótulo não pode viver no placeholder
+// ---------------------------------------------------------------------------
+// Relatado pelo Fábio (08/09): ao reabrir um apontamento devolvido para
+// corrigir, ele via os valores preenchidos e não sabia mais qual campo era
+// qual -- porque o nome do campo estava no placeholder, e placeholder some
+// quando há valor. Some justamente na hora de conferir o que foi digitado.
+//
+// Vale para os cards de equipamento e máquina, que não usam campoHtml() (o
+// layout é em grade, vários campos por linha) e por isso não tinham rótulo.
+console.log("\n--- rótulo fixo nos campos de equipamento e máquina ---\n");
+
+checar("existe o helper que põe rótulo acima do campo",
+  /function rotulado\(rotulo, htmlCampo\)[\s\S]{0,300}campo-rotulado/.test(htmlCompleto),
+  "helper rotulado() não encontrado");
+
+// Os três blocos que tinham o problema. Se algum voltar a montar o
+// fake-select sem rótulo, o operador perde a referência de novo.
+["data-eqidx", "data-maqidx", "data-mdidx"].forEach(function (attr) {
+  const re = new RegExp('rotulado\\("Equipamento"[\\s\\S]{0,300}' + attr + '[\\s\\S]{0,400}rotulado\\("Operador"');
+  checar("equipamento/operador rotulados no bloco " + attr,
+    re.test(htmlCompleto),
+    "o bloco " + attr + " voltou a depender do placeholder");
+});
+
+checar("os campos numéricos da máquina detalhada têm rótulo",
+  /rotulado\(phDinamico\([^)]*"comprimento_m"[^)]*\)/.test(htmlCompleto) &&
+  /rotulado\(phDinamico\([^)]*"largura_m"[^)]*\)/.test(htmlCompleto),
+  "comprimento/largura seguem só com placeholder -- era o caso que confundiu");
+
+// Envolver os campos num <div> quebraria qualquer seletor que dependesse de
+// filho direto. Todos usam descendente; este teste cobra que continue assim.
+checar("nenhum handler depende de filho direto (>) para achar os campos",
+  !/querySelectorAll\('[^']*(maquina-card|maquina-detalhada-card|eq-pair)[^']*>\s*(input|textarea|\.fake-select)/.test(htmlCompleto),
+  "um seletor passou a usar '>' e não encontraria o campo dentro do wrapper");
+
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
 process.exit(erros ? 1 : 0);
