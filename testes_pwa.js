@@ -217,8 +217,11 @@ checar("bloqueia reabrir relatório já enviado sem devolução",
   /function confirmarReabrir[\s\S]{0,400}relatorioJaEnviado\(r\)\s*&&\s*!relatorioTemDevolucao\(r\)/.test(htmlCompleto),
   "confirmarReabrir não checa o estado antes de reabrir");
 
+// A checagem mudou de relatorioJaEnviado() para atividadeJaEnviada() em 08/09,
+// depois que o Fábio achou o furo do "reabri, logo posso apagar" -- ver a
+// seção no fim deste arquivo. O teste acompanha a correção.
 checar("bloqueia remover apontamento já enviado sem devolução",
-  /del-ativ[\s\S]{0,900}relatorioJaEnviado\(r\)\s*&&\s*!atividadeFoiDevolvida\(/.test(htmlCompleto),
+  /del-ativ[\s\S]{0,900}atividadeJaEnviada\(ativ\)\s*&&\s*!atividadeFoiDevolvida\(/.test(htmlCompleto),
   "o botão de remover não checa se o apontamento já foi enviado");
 
 checar("relatório com devolução PODE ser reaberto (senão a correção fica impossível)",
@@ -232,6 +235,51 @@ checar("a trava só vale depois de sincronizar (rascunho continua livre)",
 checar("avisa o operador quando o servidor ignora alterações",
   /dados\.congeladas[\s\S]{0,300}remocoes_negadas[\s\S]{0,400}showToast/.test(htmlCompleto),
   "a resposta da sincronização não é lida, ou o aviso não aparece");
+
+// ---------------------------------------------------------------------------
+// O furo do "reabri, logo posso apagar tudo"
+// ---------------------------------------------------------------------------
+// Encontrado pelo Fábio testando, horas depois de a trava entrar (08/09): ele
+// conseguiu excluir um apontamento que já estava no painel.
+//
+// A primeira versão da trava usava relatorioJaEnviado(), que exige
+// `r.status === "concluido"`. Só que confirmarReabrir() faz
+// `r.status = "rascunho"` -- então bastava reabrir para a trava sumir. E
+// reabrir é o caminho LEGÍTIMO de atender a uma devolução: corrigir um
+// apontamento destravava a exclusão de todos os outros.
+//
+// O estrago não era perder a alteração. O servidor recusa a remoção, então o
+// apontamento continua no banco -- mas o app apagava localmente. O painel
+// devolvia algo que não existia mais no aparelho, o banner aparecia, e o
+// operador não tinha o que corrigir: fluxo travado, sem saída.
+//
+// A marca passou a ser por atividade (`enviadaEm`), que nada limpa.
+console.log("\n--- exclusão depois de reabrir (furo de 08/09) ---\n");
+
+checar("a trava de exclusão NÃO depende de relatorioJaEnviado (some ao reabrir)",
+  !/del-ativ[\s\S]{0,900}relatorioJaEnviado\(r\)\s*&&\s*!atividadeFoiDevolvida/.test(htmlCompleto),
+  "voltou a usar relatorioJaEnviado: reabrir destrava a exclusão de novo");
+
+checar("exclusão checa a marca da própria atividade (enviadaEm)",
+  /del-ativ[\s\S]{0,900}atividadeJaEnviada\(ativ\)\s*&&\s*!atividadeFoiDevolvida\(/.test(htmlCompleto),
+  "o botão de remover não usa atividadeJaEnviada");
+
+checar("edição checa a mesma marca (senão reabrir destrava alterar)",
+  /atividadeJaEnviada\(ativCard\)\s*&&\s*!atividadeFoiDevolvida\(/.test(htmlCompleto),
+  "abrir a atividade para edição não verifica se ela já foi enviada");
+
+checar("enviadaEm é gravado quando a sincronização dá certo",
+  /rpcSincronizado = true[\s\S]{0,300}marcarAtividadesComoEnviadas\(r\)/.test(htmlCompleto),
+  "a marca não é gravada após sincronizar");
+
+checar("reabrir NÃO limpa enviadaEm",
+  !/r\.status = "rascunho"[\s\S]{0,200}enviadaEm\s*=\s*(null|undefined|"")/.test(htmlCompleto),
+  "confirmarReabrir está limpando a marca -- o furo volta");
+
+checar("RDO sincronizado antes desta versão também fica protegido",
+  /function marcarEnviadasRetroativo[\s\S]{0,500}relatorioSincronizado\(r\)/.test(htmlCompleto) &&
+  /carregarRelatoriosSalvos[\s\S]{0,400}marcarEnviadasRetroativo\(\)/.test(htmlCompleto),
+  "sem marcação retroativa, o que já está no aparelho segue destravado");
 
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
