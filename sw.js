@@ -5,7 +5,7 @@
 // internet — inclusive na primeira tela, sem precisar já ter sido aberto
 // online antes de ir a campo.
 
-var CACHE_NAME = "gtm-rdo-v31";
+var CACHE_NAME = "gtm-rdo-v32";
 var APP_SHELL = [
   "./",
   "./index.html",
@@ -71,7 +71,16 @@ self.addEventListener("push", function (event) {
       body: dados.corpo || "",
       icon: "./icon-192.png",
       badge: "./icon-192.png",
-      tag: "gtm-rdo-devolucao", // uma notificação nova substitui a anterior, não empilha
+      // Tag POR APONTAMENTO, não uma fixa para tudo.
+      //
+      // Antes era "gtm-rdo-devolucao" para toda notificação, e o navegador usa
+      // a tag para substituir: devolver #12, #13 e #14 mostrava só o #14. Isso
+      // passava quando o aviso era genérico; virou perda de informação quando
+      // cada devolução passou a citar um número (09/09).
+      //
+      // Mantém a substituição onde ela faz sentido: reenviar a devolução do
+      // MESMO apontamento atualiza o aviso em vez de duplicar.
+      tag: dados.referencia ? ("gtm-rdo-devolucao-" + dados.referencia) : "gtm-rdo-devolucao",
       data: { url: "./" }
     })
   );
