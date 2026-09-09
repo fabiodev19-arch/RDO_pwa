@@ -219,6 +219,16 @@
   }
   .ativ-card .top{display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:6px;}
   .ativ-card .tipo{font-weight:700; font-size:14px;}
+  /* Número do apontamento: monoespaçado para o dígito ficar fácil de ler e de
+     ditar. Discreto de propósito -- é referência, não a informação principal. */
+  .ativ-num{
+    font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size:12px; font-weight:700; color:var(--brand);
+    background:var(--surface-3); border-radius:5px; padding:1px 6px;
+    margin-right:2px; white-space:nowrap;
+  }
+  html[data-theme="light"] .ativ-num{color:var(--brand-dark);}
+  .ativ-num.novo{color:var(--text-dim); font-weight:600;}
   .ativ-card .resumo{font-size:12.5px; color:var(--text-dim); line-height:1.5;}
   .ativ-card .trash{background:none; border:none; color:var(--text-dim); flex:0 0 auto; padding:2px;}
   .ativ-card .trash svg{width:17px; height:17px;}
@@ -400,6 +410,26 @@
   html[data-theme="light"] .sucesso-check.estado-enviando{color:var(--brand-dark);}
   .sucesso-check.estado-enviando svg{animation:girar 1s linear infinite;}
   @keyframes girar{ from{transform:rotate(0deg);} to{transform:rotate(360deg);} }
+
+  /* O check entra com um pulo curto quando a sincronização confirma. Junto com
+     o tempo mínimo da tela de envio, é o que marca a passagem de "enviando"
+     para "enviado" -- antes as duas telas trocavam no mesmo instante do toque
+     e o operador não via a diferença. */
+  .sucesso-check.estado-ok{animation:check-entra .42s cubic-bezier(.2,1.4,.4,1);}
+  .sucesso-check.estado-ok svg{animation:check-risca .38s ease-out .06s both;}
+  @keyframes check-entra{
+    0%{transform:scale(.4); opacity:0;}
+    60%{transform:scale(1.08);}
+    100%{transform:scale(1); opacity:1;}
+  }
+  @keyframes check-risca{ from{opacity:0; transform:scale(.6);} to{opacity:1; transform:scale(1);} }
+
+  /* Quem pediu para reduzir movimento não recebe as animações -- só o estado
+     final, sem pulo nem giro. */
+  @media (prefers-reduced-motion: reduce){
+    .sucesso-check.estado-ok, .sucesso-check.estado-ok svg,
+    .sucesso-check.estado-enviando svg{animation:none;}
+  }
   .sucesso-check.estado-pendente{background:rgba(232,135,30,.15); color:var(--accent);}
   .sucesso-wrap h2{margin:0 0 8px; font-size:19px;}
   .sucesso-wrap p{margin:0 0 26px; color:var(--text-dim); font-size:13.5px; max-width:280px; line-height:1.5;}
@@ -628,6 +658,26 @@
     navigator.serviceWorker.addEventListener("message", function(evento){
       if (evento && evento.data && evento.data.tipo === "notificacao-clicada"){
         _ultimaChecagemDevolvidas = 0; // veio de ação do usuário: não segura
+
+        // Levar para a lista, que é ONDE o banner de devolvidas existe.
+        //
+        // A primeira versão disto (08/09) só revalidava os dados, e o Fábio
+        // relatou que continuava precisando atualizar a tela na mão. O motivo:
+        // se o app estava numa tela interna (dentro de um relatório), a
+        // revalidação acontecia mas não havia onde o banner aparecer -- ele só
+        // é desenhado em renderTelaLista. Recarregar levava à lista, e por isso
+        // "atualizar" parecia resolver.
+        //
+        // Exceção: a tela de atividade tem edição em andamento com snapshot;
+        // arrastar o operador para fora dela no meio de um preenchimento seria
+        // pior do que ele tocar em "voltar". Nesse caso, avisa e fica.
+        if (App.tela !== "login"){
+          if (App.tela === "atividade"){
+            showToast("Há apontamento devolvido. Termine aqui e volte para ver.");
+          } else if (App.tela !== "lista"){
+            App.tela = "lista";
+          }
+        }
         revalidarDevolvidas();
       }
     });
@@ -1454,7 +1504,9 @@
         '<div class="devolvido-banner-titulo">'+alertIcon()+' '+App.atividadesDevolvidas.length+' atividade(s) devolvida(s) para correção</div>'+
         App.atividadesDevolvidas.map(function(d){
           return '<button class="devolvido-item" data-rel="'+esc(d.relatorio_uuid_dispositivo)+'">'+
-            '<span class="devolvido-item-tipo">'+esc(d.tipo_atividade||"Atividade")+'</span>'+
+            '<span class="devolvido-item-tipo">'+
+              (d.numero != null ? '<span class="ativ-num">#'+esc(String(d.numero))+'</span> ' : '')+
+              esc(d.tipo_atividade||"Atividade")+'</span>'+
             '<span class="devolvido-item-local">'+esc(d.fazenda||"")+(d.data_relatorio?(" · "+formatarData(d.data_relatorio)):"")+'</span>'+
             '<span class="devolvido-item-motivo">'+esc(d.motivo_devolucao||"")+'</span>'+
           '</button>';
@@ -1756,6 +1808,20 @@
   function devolucaoDaAtividade(a){
     return (App.atividadesDevolvidas || []).filter(function(d){ return d.atividade_id === a.id; })[0] || null;
   }
+  // Etiqueta com o número do apontamento, para o operador e o revisor citarem
+  // a mesma coisa ("confere o 12").
+  //
+  // O número nasce no banco, então antes de sincronizar ele não existe. Nesse
+  // intervalo mostramos "novo" em vez de inventar um provisório: número que
+  // muda depois é pior do que número que ainda não chegou -- o operador
+  // anotaria um valor que não serviria para achar nada.
+  function numeroApontamentoHtml(a){
+    if (a && a.numero != null){
+      return '<span class="ativ-num">#'+esc(String(a.numero))+'</span> ';
+    }
+    return '<span class="ativ-num novo" title="O número é gerado ao enviar para o escritório">novo</span> ';
+  }
+
   function renderTabAtividades(r){
     var html = "";
     if (!r.atividades.length){
@@ -1764,7 +1830,8 @@
       html += r.atividades.map(function(a, idx){
         var devolucao = devolucaoDaAtividade(a);
         return '<div class="ativ-card'+(devolucao?" ativ-card-devolvido":"")+'" data-idx="'+idx+'" data-id="'+esc(a.id||"")+'">'+
-          '<div class="top"><span class="tipo">'+esc(a.tipo_atividade)+'</span>'+
+          '<div class="top">'+
+            '<span class="tipo">'+numeroApontamentoHtml(a)+esc(a.tipo_atividade)+'</span>'+
             '<button class="trash" data-idx="'+idx+'" data-action="del-ativ">'+trashIcon()+'</button></div>'+
           '<div class="resumo">'+esc(resumoAtividade(a))+'</div>'+
           (devolucao ? '<div class="ativ-card-motivo">'+alertIcon()+' Devolvido: '+esc(devolucao.motivo_devolucao)+'</div>' : '')+
@@ -2016,6 +2083,18 @@
 
     concluirRelatorio(r);
   }
+  // Tempo mínimo que a tela "Enviando relatório..." fica visível.
+  //
+  // Numa rede boa a sincronização volta em poucas centenas de milissegundos, e
+  // o operador via o check aparecer no mesmo instante do toque -- sem perceber
+  // que houve envio. Segurar por um momento não é enfeite: é o que transforma
+  // "apertei o botão" em "vi o relatório subir", que é o que dá confiança de
+  // que o dia de trabalho saiu do aparelho.
+  //
+  // Só atrasa o caminho de SUCESSO rápido. Erro e offline aparecem na hora --
+  // notícia ruim não se enfeita.
+  var TEMPO_MINIMO_ENVIANDO_MS = 1200;
+
   function concluirRelatorio(r){
     r.status = "concluido";
     r.concluidoEm = new Date().toISOString();
@@ -2023,6 +2102,7 @@
     persistir(r);
     App.tela = "sucesso";
     App.sucessoEstado = (supabaseClient && navigator.onLine) ? "enviando" : "pendente";
+    var iniciouEnvioEm = Date.now();
     render();
 
     if (supabaseClient && navigator.onLine){
@@ -2030,8 +2110,17 @@
         // só atualiza a mensagem da tela de sucesso se o usuário ainda
         // estiver olhando o resultado deste mesmo relatório
         if (App.tela === "sucesso" && App.atualId === r.id){
-          App.sucessoEstado = relatorioSincronizado(r) ? "sincronizado" : "pendente";
-          render();
+          var deu = relatorioSincronizado(r);
+          var falta = TEMPO_MINIMO_ENVIANDO_MS - (Date.now() - iniciouEnvioEm);
+          var mostrar = function(){
+            // Rechecar: nesses milissegundos o operador pode ter saído da tela
+            // ou aberto outro relatório.
+            if (App.tela !== "sucesso" || App.atualId !== r.id) return;
+            App.sucessoEstado = deu ? "sincronizado" : "pendente";
+            render();
+          };
+          if (deu && falta > 0) setTimeout(mostrar, falta); else mostrar();
+          return;
         }
       });
     }
@@ -2162,6 +2251,17 @@
       // Avisar é obrigatório: sem isso o aparelho segue mostrando o valor que
       // o operador digitou e o banco guarda o antigo, e ninguém percebe.
       var dados = resp.data || {};
+
+      // O número visível do apontamento nasce no banco, então só chega aqui na
+      // resposta. Guardar no aparelho é o que permite o operador ver o mesmo
+      // "#12" que o revisor vê no painel -- e citá-lo ao telefone.
+      if (dados.numeros){
+        (r.atividades || []).forEach(function(a){
+          var n = dados.numeros[a.id];
+          if (n != null) a.numero = n;
+        });
+      }
+
       var ignorados = (Number(dados.congeladas) || 0) + (Number(dados.remocoes_negadas) || 0);
       if (ignorados > 0){
         showToast(
@@ -2634,7 +2734,7 @@
     }
     if (estado === "sincronizado"){
       return '<div class="sucesso-wrap">'+
-        '<div class="sucesso-check">'+checkIcon()+'</div>'+
+        '<div class="sucesso-check estado-ok">'+checkIcon()+'</div>'+
         '<h2>Relatório enviado</h2>'+
         '<p>Sincronizado com sucesso no servidor.</p>'+
         '<button class="btn btn-primary" id="btn-voltar-lista" style="max-width:220px">Voltar para a lista</button>'+
