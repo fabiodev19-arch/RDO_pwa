@@ -1623,7 +1623,7 @@
         if (rel && relatorioJaSubiu(rel)){
           showInfo(
             "Relatório já subiu para revisão",
-            "Este RDO já está com a revisão e não pode ser apagado do aparelho. " +
+            "Este relatório já está com o administrador e não pode ser apagado do aparelho. " +
             "Ele é a única cópia que você tem aqui: se algum apontamento for devolvido, " +
             "é por ele que a correção acontece."
           );
@@ -2123,11 +2123,11 @@
 
       showInfo(
         "Relatório já subiu para revisão",
-        "Este RDO já está com a revisão e não pode mais ser alterado aqui. " +
+        "Este relatório já está com o administrador e não pode mais ser alterado aqui. " +
         (numeros.length
           ? "Se algo precisa mudar, peça a devolução do apontamento pelo número: " +
             numeros.join(", ") + "."
-          : "Se algo precisa mudar, peça a devolução do apontamento ao escritório.")
+          : "Se algo precisa mudar, peça a devolução do apontamento ao administrador.")
       );
       return;
     }
