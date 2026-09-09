@@ -442,6 +442,50 @@ checar("o texto de busca de cada opção também é normalizado",
   /data-busca="'\+escAttr\(normalizarBusca\(o\)\)/.test(htmlCompleto),
   "a opção guarda o texto cru: normalizar só a consulta não adianta");
 
+// ---------------------------------------------------------------------------
+// A caixa dos campos Equipamento/Operador dentro dos cards
+// ---------------------------------------------------------------------------
+// Achado medindo o layout em 360px (09/09): o padding/borda/fundo do campo vive
+// em `.field .fake-select`, e os cards de equipamento e máquina não ficam dentro
+// de um .field. Os dois campos apareciam como texto solto de 21px de altura, ao
+// lado de campos de 46px com borda -- e 21px é alvo de toque curto para app de
+// campo. Não era regressão dos rótulos: as regras de .fake-select eram idênticas
+// antes deles. Estava assim em produção e ninguém tinha reparado.
+//
+// O teste é sobre o CSS porque é onde o defeito mora: dá para "ter rótulo" e
+// mesmo assim o campo não parecer campo.
+console.log("\n--- caixa dos campos de equipamento e máquina ---\n");
+
+const cssCompleto = htmlCompleto.match(/<style>([\s\S]*?)<\/style>/)[1];
+
+// Junta as regras que dão caixa (padding + borda), com os seletores de cada uma.
+const regrasComCaixa = [];
+cssCompleto.replace(/([^{}]+)\{([^}]*)\}/g, function (_, sel, corpo) {
+  if (/padding\s*:/.test(corpo) && /border\s*:/.test(corpo)) {
+    regrasComCaixa.push(sel.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " "));
+  }
+  return _;
+});
+function temCaixa(seletor) {
+  return regrasComCaixa.some(function (r) { return r.indexOf(seletor) !== -1; });
+}
+
+[".eq-pair .fake-select",
+ ".maquina-card .fake-select",
+ ".maquina-detalhada-card .fake-select"
+].forEach(function (sel) {
+  checar("campo com caixa: " + sel,
+    temCaixa(sel),
+    sel + " não casa nenhuma regra com padding e borda -- o campo volta a 21px");
+});
+
+// Regressão: a correção acrescenta contextos, não mexe no campo que já
+// funcionava. Se alguém "simplificar" trocando .field pelos novos seletores,
+// todo o resto do formulário perde a caixa de uma vez.
+checar("o campo de dentro de .field continua com a sua caixa",
+  temCaixa(".field .fake-select"),
+  "a regra original sumiu -- isso derruba a caixa do resto do formulário");
+
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
 process.exit(erros ? 1 : 0);

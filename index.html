@@ -163,6 +163,20 @@
   .fake-select span.placeholder{color:var(--text-dim);}
   .fake-select svg{width:16px; height:16px; color:var(--text-dim); flex:0 0 auto;}
   .fake-select.locked{opacity:.6; cursor:default;}
+  /* A caixa do campo (padding, borda, fundo) mora em `.field .fake-select`, e os
+     cards de equipamento e máquina NÃO ficam dentro de um .field -- o .field do
+     "UP (Talhão)" fecha antes deles. Então "Equipamento" e "Operador" vinham
+     como texto solto com uma seta, 21px de altura, ao lado de campos de 46px com
+     borda: na mesma linha, um parecia campo e o outro não.
+     Não veio dos rótulos -- as regras de .fake-select são idênticas às de antes
+     deles; o rótulo só tornou a diferença visível. E 21px é alvo de toque curto
+     demais para app usado em pé, no sol, às vezes de luva. */
+  .eq-pair .fake-select,
+  .maquina-card .fake-select,
+  .maquina-detalhada-card .fake-select{
+    padding:12px 13px; border-radius:var(--radius-sm); border:1px solid var(--border);
+    background:var(--surface-2); color:var(--text); font-size:14.5px;
+  }
   .row-2{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
   .row-3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;}
 
