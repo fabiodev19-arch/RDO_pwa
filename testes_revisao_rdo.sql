@@ -107,6 +107,7 @@ BEGIN
     'atividades.revisado_em',
     'atividades.excluido_em',
     'atividades.excluido_por',
+    'atividades.descricao_atividade',
     'relatorios.criado_por'
   ]
   LOOP
@@ -122,6 +123,41 @@ END $secao_a$;
 
 SELECT pg_temp.checar('A', 'tabela push_subscriptions existe',
   to_regclass('public.push_subscriptions') IS NOT NULL);
+
+-- Catálogo de descrições e o de-para de tarifa (descricao_atividade_e_tarifas.sql).
+-- A contagem não é fixada em 108 de propósito: o catálogo cresce quando a
+-- tarifa muda, e um teste que exige o número de hoje quebraria por acerto,
+-- não por defeito. O que importa é que exista e que cada descrição tenha par.
+SELECT pg_temp.checar('A', 'catálogo de descrições de atividade foi carregado',
+  (SELECT count(*) FROM cadastros WHERE categoria = 'descricao_atividade' AND ativo) > 0);
+
+SELECT pg_temp.checar('A', 'toda descrição do catálogo tem código e unidade de tarifa',
+  NOT EXISTS (
+    SELECT 1 FROM cadastros c
+    WHERE c.categoria = 'descricao_atividade' AND c.ativo
+      AND NOT EXISTS (
+        SELECT 1 FROM regras_negocio r
+        WHERE r.tipo_regra = 'tarifa_descricao' AND r.ativo
+          AND r.chave = c.valor
+          AND r.valor->>'codigo' IS NOT NULL
+          AND r.valor->>'unidade' IS NOT NULL
+      )
+  ),
+  'existe descrição no catálogo sem tarifa: o painel não conseguiria calcular a produção dela');
+
+-- A unidade é o que decide a fórmula da produção consolidada, então uma
+-- unidade escrita fora do combinado (minúscula, com espaço) viraria uma
+-- atividade que nunca casa com nenhuma regra de cálculo.
+SELECT pg_temp.checar('A', 'as unidades de tarifa estão todas na lista conhecida',
+  NOT EXISTS (
+    SELECT 1 FROM regras_negocio
+    WHERE tipo_regra = 'tarifa_descricao' AND ativo
+      AND valor->>'unidade' NOT IN ('M²','M³','HT','HD','KM','UN','DIÁRIA')
+  ),
+  (SELECT coalesce(string_agg(DISTINCT valor->>'unidade', ', '), '')
+     FROM regras_negocio
+    WHERE tipo_regra = 'tarifa_descricao' AND ativo
+      AND valor->>'unidade' NOT IN ('M²','M³','HT','HD','KM','UN','DIÁRIA')));
 
 SELECT pg_temp.checar('A', 'push_subscriptions tem RLS ligada',
   (SELECT relrowsecurity FROM pg_class WHERE oid = to_regclass('public.push_subscriptions')));
@@ -266,6 +302,10 @@ BEGIN
     'atividades', jsonb_build_array(jsonb_build_object(
       'id', v_ativ_uuid,
       'tipo_atividade', 'Construção de Aterro',
+      -- Descrição REAL do catálogo de tarifas (código 1077, unidade M³). Tem
+      -- que ser real: é a chave do de-para, e uma inventada testaria só o
+      -- caminho em que nada casa.
+      'descricao_atividade', 'CONSTRUÇÃO DE ATERRO - M³',
       'observacao', 'TESTE AUTOMATIZADO - NAO DEVE PERSISTIR',
       'profundidade_cm', 30,
       -- A foto existe no payload por causa do C10: ela é a evidência que a
@@ -300,6 +340,13 @@ BEGIN
 
   SELECT id INTO v_rel_id FROM relatorios WHERE uuid_dispositivo = v_rel_uuid;
   PERFORM pg_temp.checar('C', 'sincronizar cria o relatório', v_rel_id IS NOT NULL);
+
+  -- A descrição chegou ao banco? É ela que amarra o apontamento à tarifa.
+  PERFORM pg_temp.checar('C', 'sincronizar grava a descrição de atividade',
+    EXISTS (SELECT 1 FROM atividades a
+             WHERE a.relatorio_id = v_rel_id
+               AND a.descricao_atividade = 'CONSTRUÇÃO DE ATERRO - M³'),
+    'a descrição não foi gravada: sem ela o apontamento não tem tarifa nem unidade');
 
   IF v_corte THEN
     PERFORM pg_temp.checar('C', 'sincronizar grava criado_por = quem estava logado',
@@ -370,6 +417,21 @@ BEGIN
       WHERE (rel->>'id')::uuid = v_rel_id
         AND ativ->>'status_revisao' = 'devolvido'
     ));
+
+  -- O painel recebe a tarifa RESOLVIDA, não a descrição crua: é o servidor que
+  -- faz o de-para, porque a unidade decide a fórmula da produção -- número que
+  -- vira faturamento não se calcula no navegador (BOAS_PRATICAS §2).
+  PERFORM pg_temp.checar('C', 'o painel recebe código e unidade da tarifa já resolvidos',
+    EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(listar_relatorios_painel(NULL, NULL, NULL, NULL, 100)) rel,
+           jsonb_array_elements(rel->'atividades') ativ
+      WHERE (rel->>'id')::uuid = v_rel_id
+        AND ativ->>'descricao_atividade' = 'CONSTRUÇÃO DE ATERRO - M³'
+        AND ativ->>'codigo_tarifa'  IS NOT NULL
+        AND ativ->>'unidade_tarifa' = 'M³'
+    ),
+    'o de-para não resolveu: o painel receberia a descrição sem tarifa nem unidade');
 
   -- C7 -- o PWA precisa ver a devolução, e pelo id que ELE conhece.
   -- Depende de criado_por, que só é gravado pelo arquivo 4.
@@ -728,6 +790,22 @@ BEGIN
     v_qtd = 1, 'atividades gravadas = ' || v_qtd);
   PERFORM pg_temp.checar('D', 'a atividade sincronizada nunca fica sem uuid de dispositivo',
     v_nulos = 0, 'atividades com uuid nulo = ' || v_nulos);
+
+  -- ESTE é o teste que protege quem está em campo AGORA.
+  --
+  -- O payload acima não tem 'descricao_atividade' -- de propósito: é o payload
+  -- do PWA publicado, que não conhece o campo. Se a coluna nova tivesse nascido
+  -- NOT NULL, ou se a função exigisse a chave, toda sincronização de operador
+  -- passaria a falhar e o RDO do dia ficaria preso no aparelho. Já aconteceu
+  -- neste projeto, com uuid_atividade_dispositivo (ver ESTADO.md).
+  PERFORM pg_temp.checar('D', 'RDO sem descrição de atividade continua sincronizando',
+    v_qtd = 1,
+    'o PWA que está em campo não manda esse campo: exigi-lo prende o dia de trabalho no aparelho');
+
+  PERFORM pg_temp.checar('D', 'apontamento sem descrição fica com a coluna nula, não vazia',
+    EXISTS (SELECT 1 FROM atividades a JOIN relatorios r ON r.id = a.relatorio_id
+             WHERE r.uuid_dispositivo = v_uuid AND a.descricao_atividade IS NULL),
+    'gravou string vazia em vez de NULL -- o LEFT JOIN da tarifa passaria a procurar por ""');
 
   PERFORM set_config('request.jwt.claims', '', true);
 EXCEPTION WHEN OTHERS THEN
