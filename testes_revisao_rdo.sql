@@ -663,6 +663,107 @@ BEGIN
 END $secao_c$;
 
 -- ============================================================================
+-- SEÇÃO C (continuação) — produção consolidada, uma linha por produção
+-- ============================================================================
+-- Um apontamento de "máquinas detalhado" vale N produções, uma por máquina,
+-- cada uma com sua descrição, sua tarifa e sua unidade -- a escavadeira pode
+-- estar em M³ e o caminhão em HT no mesmo serviço.
+--
+-- Este caminho não existia em dado nenhum do banco quando foi escrito: NENHUMA
+-- atividade tinha mais de uma máquina. Ou seja, sem este teste a lógica de N
+-- produções iria para produção sem nunca ter rodado.
+DO $secao_c_prod$
+DECLARE
+  v_uid       uuid;
+  v_rel_uuid  uuid := gen_random_uuid();
+  v_ativ_uuid uuid := gen_random_uuid();
+  v_prods     jsonb;
+  v_p_area    jsonb;
+  v_p_hora    jsonb;
+BEGIN
+  SELECT id INTO v_uid FROM auth.users ORDER BY created_at LIMIT 1;
+  IF v_uid IS NULL THEN
+    PERFORM pg_temp.pular('C', 'produção consolidada por máquina', 'auth.users vazia');
+    RETURN;
+  END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+
+  -- Duas máquinas no MESMO apontamento, com descrições de unidades diferentes.
+  PERFORM sincronizar_relatorio_rdo(jsonb_build_object(
+    'uuid_dispositivo', v_rel_uuid,
+    'cliente', 'Colheita', 'contrato', 'ARAUCO', 'faena', 'TESTE PRODUCAO',
+    'tipo_estrada', 'Acesso', 'equipe_frente', 'GTM', 'fazenda', 'Elo Dourado 2',
+    'data', '2026-09-09', 'encarregado', 'Elson', 'supervisor', 'Valmir',
+    'tecnico_arauco', 'Edwilson', 'supervisor_arauco', 'Luciano', 'concluidoEm', now(),
+    'atividades', jsonb_build_array(jsonb_build_object(
+      'id', v_ativ_uuid,
+      'tipo_atividade', 'Patrolamento',
+      'maquinas', jsonb_build_array(
+        -- por ÁREA: sem quantidade, unidade M³ -> comprimento * largura = 200
+        jsonb_build_object('equipamento','MN-006','operador','JOSE',
+          'dados', jsonb_build_object('descricao','CONSTRUÇÃO DE ATERRO - M³',
+                                      'comprimento_m', 20, 'largura_m', 10)),
+        -- por HORA: sem quantidade, unidade HT -> hora_final - hora_inicial = 3.5
+        jsonb_build_object('equipamento','CB-014','operador','MARCELO',
+          'dados', jsonb_build_object('descricao','CAMINHÃO CAÇAMBA - HT',
+                                      'hora_inicial', 7.5, 'hora_final', 11))
+      )))
+  ));
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+
+  SELECT ativ->'producoes' INTO v_prods
+    FROM jsonb_array_elements(listar_relatorios_painel(NULL, NULL, NULL, NULL, 200)) rel,
+         jsonb_array_elements(rel->'atividades') ativ
+   WHERE rel->>'id' = (SELECT id::text FROM relatorios WHERE uuid_dispositivo = v_rel_uuid);
+
+  PERFORM pg_temp.checar('C', 'apontamento com 2 máquinas rende 2 linhas de produção',
+    jsonb_array_length(coalesce(v_prods, '[]'::jsonb)) = 2,
+    'produções = ' || jsonb_array_length(coalesce(v_prods, '[]'::jsonb)));
+
+  SELECT p INTO v_p_area FROM jsonb_array_elements(coalesce(v_prods,'[]'::jsonb)) p
+   WHERE p->>'equipamento' = 'MN-006';
+  SELECT p INTO v_p_hora FROM jsonb_array_elements(coalesce(v_prods,'[]'::jsonb)) p
+   WHERE p->>'equipamento' = 'CB-014';
+
+  PERFORM pg_temp.checar('C', 'cada máquina carrega a SUA tarifa, não a do apontamento',
+    v_p_area->>'unidade_tarifa' = 'M³' AND v_p_hora->>'unidade_tarifa' = 'HT',
+    'unidades: ' || coalesce(v_p_area->>'unidade_tarifa','?') || ' e ' || coalesce(v_p_hora->>'unidade_tarifa','?'));
+
+  -- A fórmula, nos dois ramos que ela tem quando não há quantidade.
+  PERFORM pg_temp.checar('C', 'produção por área = comprimento x largura',
+    (v_p_area->>'producao')::numeric = 200,
+    'veio ' || coalesce(v_p_area->>'producao','NULL') || ', esperado 200');
+
+  PERFORM pg_temp.checar('C', 'produção por hora = hora final - hora inicial (unidade HT)',
+    (v_p_hora->>'producao')::numeric = 3.5,
+    'veio ' || coalesce(v_p_hora->>'producao','NULL') || ', esperado 3.5');
+
+  PERFORM pg_temp.checar('C', 'a produção vem com o código de tarifa da própria máquina',
+    v_p_area->>'codigo_tarifa' IS NOT NULL AND v_p_hora->>'codigo_tarifa' IS NOT NULL
+      AND v_p_area->>'codigo_tarifa' <> v_p_hora->>'codigo_tarifa',
+    'códigos: ' || coalesce(v_p_area->>'codigo_tarifa','?') || ' e ' || coalesce(v_p_hora->>'codigo_tarifa','?'));
+
+  PERFORM set_config('request.jwt.claims', '', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.checar('C', 'produção consolidada por máquina', false, SQLERRM);
+END $secao_c_prod$;
+
+-- A quantidade ganha de tudo: é o primeiro ramo da fórmula do Excel, e o que
+-- mais aparece em campo. Testado direto na função para não depender de uma
+-- sincronização inteira.
+SELECT pg_temp.checar('C', 'quantidade preenchida vence horas e área',
+  producao_consolidada(7, 'HT', 1, 99, 50, 50) = 7,
+  'a quantidade deixou de ter prioridade na fórmula');
+
+SELECT pg_temp.checar('C', 'sem medida nenhuma, a produção é nula (não zero)',
+  producao_consolidada(NULL, 'M³', NULL, NULL, NULL, NULL) IS NULL,
+  'zero seria lido como "produziu nada", e o certo é "não dá para calcular"');
+
+-- ============================================================================
 -- SEÇÃO D — regressão: o que já funcionava tem que continuar funcionando
 -- ============================================================================
 -- É a parte que responde ao "garanta que nenhum passo quebre o anterior".
