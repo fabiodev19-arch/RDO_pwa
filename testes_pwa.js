@@ -304,9 +304,71 @@ checar("a migração roda uma vez por relatório (não marca atividade criada de
   /r\.migrouEnviadaEm = true/.test(fonteMigracao),
   "sem a flag, um rascunho novo seria marcado como enviado na carga seguinte");
 
+// TERCEIRA falha da mesma trava (09/09). As duas anteriores foram no
+// apontamento; esta era no RELATÓRIO INTEIRO -- o botão de excluir da lista
+// não checava nada, e ele leva junto todos os apontamentos, inclusive os já
+// revisados.
+//
+// O que torna isso sem volta: o PWA não baixa relatório do servidor. O RDO
+// apagado some do aparelho e continua no banco; se um apontamento dele for
+// devolvido depois, o operador não tem o que corrigir e a devolução fica
+// pendente para sempre.
+//
+// Lição das três: a trava tem que perguntar "já subiu alguma vez?" e não
+// "está sincronizado agora?".
+// Extrai o handler inteiro em vez de medir distância: a primeira versão deste
+// teste usava {0,900} e falhou porque o comentário explicativo passou disso.
+const handlerExcluirRdo = extrairFuncao('querySelectorAll(".del")', 'function contarIdentRequerido');
+
+checar("excluir o RELATÓRIO checa se ele já subiu",
+  /relatorioJaSubiu\(rel\)/.test(handlerExcluirRdo),
+  "o botão de excluir relatório não verifica nada -- o furo de 09/09 voltou");
+
+checar("relatorioJaSubiu se apoia em sincronizadoEm, não no estado atual",
+  /function relatorioJaSubiu\(r\)[\s\S]{0,400}r\.sincronizadoEm/.test(htmlCompleto),
+  "relatorioJaSubiu voltou a depender só do estado volátil");
+
 // As mensagens que o operador lê. O Fábio pediu "já subiu para revisão" no
 // lugar de "já foi para o escritório" -- o RDO sobe para ser revisado, não
 // muda de lugar físico.
+// Sem o número, "peça a devolução" não diz O QUÊ pedir -- o revisor recebe
+// "devolve aquele apontamento" e tem que adivinhar qual. Apontado pelo Fábio
+// em 09/09, junto com a implantação do número.
+// A mensagem precisa citar o número E continuar legível quando não há número
+// (apontamento anterior a 09/09). A primeira versão concatenava uma referência
+// genérica e produzia "peça a devolução do 'Limpeza de valeta' — cite esse
+// número" e "Apontamento este apontamento já subiu". Os testes passavam; foi
+// imprimir a saída real que mostrou o problema. Por isso o teste agora executa
+// a função e olha o texto, em vez de conferir se o helper existe.
+const fonteAviso = extrairFuncao("function avisoApontamentoTravado", '// "Já subiu alguma vez"');
+const avisoDe = new Function(fonteAviso + "; return avisoApontamentoTravado;")();
+
+let av = avisoDe({ numero: 12, tipo_atividade: "Construção de Aterro" }, "removido");
+checar("com número: título e texto citam #12",
+  av.titulo.indexOf("#12") !== -1 && av.texto.indexOf("#12") !== -1,
+  JSON.stringify(av));
+
+av = avisoDe({ tipo_atividade: "Limpeza de valeta" }, "removido");
+checar("sem número: não fala em 'número' nem repete 'apontamento' no título",
+  av.texto.indexOf("esse número") === -1 &&
+  av.titulo.indexOf("este apontamento") === -1 &&
+  av.texto.indexOf("Limpeza de valeta") !== -1,
+  JSON.stringify(av));
+
+av = avisoDe({}, "alterado");
+checar("sem dado nenhum: frase continua inteira e sem lacuna",
+  av.texto.indexOf("  ") === -1 && av.texto.indexOf(" ,") === -1 &&
+  av.texto.indexOf("alterado") !== -1,
+  JSON.stringify(av));
+
+checar("os dois bloqueios de apontamento usam o helper",
+  (htmlCompleto.match(/avisoApontamentoTravado\((ativ|ativCard), /g) || []).length === 2,
+  "alguma mensagem de bloqueio ficou sem citar o apontamento");
+
+checar("o bloqueio de reabrir o RDO lista os números disponíveis",
+  /peça a devolução do apontamento pelo número/.test(htmlCompleto),
+  "a mensagem do relatório não diz quais números pedir");
+
 checar("as mensagens de bloqueio usam 'subiu para revisão'",
   htmlCompleto.indexOf("já subiu para revisão") !== -1 &&
   htmlCompleto.indexOf("já foi para o escritório") === -1,
