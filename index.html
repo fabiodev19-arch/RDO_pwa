@@ -1819,7 +1819,7 @@
     if (a && a.numero != null){
       return '<span class="ativ-num">#'+esc(String(a.numero))+'</span> ';
     }
-    return '<span class="ativ-num novo" title="O número é gerado ao enviar para o escritório">novo</span> ';
+    return '<span class="ativ-num novo" title="O número é gerado quando o apontamento sobe para revisão">novo</span> ';
   }
 
   function renderTabAtividades(r){
@@ -1900,7 +1900,7 @@
         if (ativCard && atividadeJaEnviada(ativCard) && !atividadeFoiDevolvida(r, ativCard.id)){
           showInfo(
             "Apontamento já enviado",
-            "Este apontamento já foi para o escritório e não pode mais ser alterado. " +
+            "Este apontamento já subiu para revisão e não pode mais ser alterado. " +
             "Se algo está errado nele, peça a devolução — aí ele volta a ficar editável."
           );
           return;
@@ -1918,7 +1918,7 @@
         var idx = Number(btn.getAttribute("data-idx"));
         var ativ = r.atividades[idx];
 
-        // Apontamento que já foi para o escritório não some do aparelho. O
+        // Apontamento que já subiu para revisão não some do aparelho. O
         // servidor também recusa (trava_edicao_pos_envio.sql) -- aqui é para o
         // operador saber por quê, em vez de apagar e ver reaparecer.
         //
@@ -1928,7 +1928,7 @@
         if (ativ && atividadeJaEnviada(ativ) && !atividadeFoiDevolvida(r, ativ.id)){
           showInfo(
             "Apontamento já enviado",
-            "Este apontamento já foi para o escritório e não pode ser removido aqui. " +
+            "Este apontamento já subiu para revisão e não pode ser removido aqui. " +
             "Se ele não deveria existir, peça a devolução — aí sim dá para removê-lo."
           );
           return;
@@ -2013,12 +2013,29 @@
   // para os RDOs que já estão no aparelho hoje.
   function marcarEnviadasRetroativo(){
     (App.relatorios || []).forEach(function(r){
-      if (!relatorioSincronizado(r)) return;
-      var mudou = false;
+      // Roda uma vez por relatório. Sem esta marca, uma atividade criada
+      // DEPOIS da migração seria marcada como enviada na carga seguinte, e o
+      // operador não conseguiria mais excluir um rascunho que nunca subiu.
+      if (r.migrouEnviadaEm) return;
+
+      // `sincronizadoEm` e não relatorioSincronizado(): esta é a segunda vez
+      // que a trava falha por se apoiar em estado volátil.
+      //
+      // relatorioSincronizado() exige status "concluido" e rpcSincronizado
+      // true -- e reabrir zera os dois. Um RDO sincronizado numa versão
+      // anterior (sem `enviadaEm`) e depois reaberto nunca era migrado, ficava
+      // sem marca nenhuma, e o app oferecia excluir um apontamento que já
+      // estava com o revisor. Foi o que o Fábio encontrou em 09/09.
+      //
+      // `sincronizadoEm` sobrevive ao reabrir, porque registra um fato do
+      // passado ("subiu em tal hora") e não o estado de agora.
+      if (!r.sincronizadoEm && !relatorioSincronizado(r)) return;
+
       (r.atividades || []).forEach(function(a){
-        if (!a.enviadaEm){ a.enviadaEm = r.sincronizadoEm || new Date().toISOString(); mudou = true; }
+        if (!a.enviadaEm) a.enviadaEm = r.sincronizadoEm || new Date().toISOString();
       });
-      if (mudou) persistir(r);
+      r.migrouEnviadaEm = true;
+      persistir(r);
     });
   }
 
@@ -2034,7 +2051,7 @@
     if (relatorioJaEnviado(r) && !relatorioTemDevolucao(r)){
       showInfo(
         "Relatório já enviado",
-        "Este RDO já foi para o escritório e não pode mais ser alterado aqui. " +
+        "Este RDO já subiu para revisão e não pode mais ser alterado aqui. " +
         "Se algo precisa mudar, peça a devolução do apontamento — ele volta a ficar editável."
       );
       return;
@@ -2042,7 +2059,7 @@
     showConfirm(
       "Reabrir relatório?",
       relatorioTemDevolucao(r)
-        ? "Você vai corrigir o apontamento devolvido. Só o que foi devolvido pode ser alterado; o resto continua como o escritório recebeu."
+        ? "Você vai corrigir o apontamento devolvido. Só o que foi devolvido pode ser alterado; o resto continua como subiu para revisão."
         : "Ele volta a ser um rascunho editável e sai do estado sincronizado até ser concluído de novo.",
       "Reabrir",
       function(){
@@ -2266,8 +2283,8 @@
       if (ignorados > 0){
         showToast(
           ignorados === 1
-            ? "1 apontamento não foi alterado: já está com o escritório."
-            : ignorados + " apontamentos não foram alterados: já estão com o escritório."
+            ? "1 apontamento não foi alterado: já subiu para revisão."
+            : ignorados + " apontamentos não foram alterados: já subiram para revisão."
         );
       }
 

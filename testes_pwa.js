@@ -276,10 +276,41 @@ checar("reabrir NÃO limpa enviadaEm",
   !/r\.status = "rascunho"[\s\S]{0,200}enviadaEm\s*=\s*(null|undefined|"")/.test(htmlCompleto),
   "confirmarReabrir está limpando a marca -- o furo volta");
 
+// Extrai a função inteira em vez de medir distância em caracteres: a primeira
+// versão destes testes usava {0,900} e quebrou quando o comentário explicativo
+// cresceu. Teste que falha por causa do tamanho de um comentário não é teste,
+// é armadilha.
+const fonteMigracao = extrairFuncao("function marcarEnviadasRetroativo", "function atividadeJaEnviada");
+
 checar("RDO sincronizado antes desta versão também fica protegido",
-  /function marcarEnviadasRetroativo[\s\S]{0,500}relatorioSincronizado\(r\)/.test(htmlCompleto) &&
+  fonteMigracao.indexOf("enviadaEm") !== -1 &&
   /carregarRelatoriosSalvos[\s\S]{0,400}marcarEnviadasRetroativo\(\)/.test(htmlCompleto),
   "sem marcação retroativa, o que já está no aparelho segue destravado");
+
+// SEGUNDA falha da mesma trava, achada pelo Fábio em 09/09: um RDO
+// sincronizado numa versão antiga e depois REABERTO não era migrado, porque
+// relatorioSincronizado() exige status "concluido" e rpcSincronizado true --
+// e reabrir zera os dois. Ficava sem marca nenhuma, e o app oferecia excluir
+// um apontamento que já estava com o revisor.
+//
+// sincronizadoEm é o que sobrevive: registra um fato do passado ("subiu em tal
+// hora"), não o estado de agora.
+checar("a migração usa sincronizadoEm, que sobrevive a reabrir",
+  /!r\.sincronizadoEm\s*&&\s*!relatorioSincronizado\(r\)/.test(fonteMigracao),
+  "voltou a depender só de relatorioSincronizado: RDO reaberto fica destravado");
+
+checar("a migração roda uma vez por relatório (não marca atividade criada depois)",
+  /if \(r\.migrouEnviadaEm\) return;/.test(fonteMigracao) &&
+  /r\.migrouEnviadaEm = true/.test(fonteMigracao),
+  "sem a flag, um rascunho novo seria marcado como enviado na carga seguinte");
+
+// As mensagens que o operador lê. O Fábio pediu "já subiu para revisão" no
+// lugar de "já foi para o escritório" -- o RDO sobe para ser revisado, não
+// muda de lugar físico.
+checar("as mensagens de bloqueio usam 'subiu para revisão'",
+  htmlCompleto.indexOf("já subiu para revisão") !== -1 &&
+  htmlCompleto.indexOf("já foi para o escritório") === -1,
+  "sobrou 'já foi para o escritório' em alguma mensagem ao usuário");
 
 // ---------------------------------------------------------------------------
 // Rótulo não pode viver no placeholder
