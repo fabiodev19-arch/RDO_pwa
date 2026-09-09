@@ -228,6 +228,8 @@ DECLARE
   v_pq        text;
   v_excluido_em   timestamptz;
   v_payload_cheio jsonb;
+  v_qtd_antes_medida numeric;
+  v_numero_inicial   bigint;
 BEGIN
   -- criado_por tem FK pra auth.users, então precisamos de um usuário real.
   -- Não criamos um (mexer em auth.users é outro departamento) -- pegamos o
@@ -308,6 +310,10 @@ BEGIN
 
   SELECT id, status_revisao INTO v_ativ_id, v_status
     FROM atividades WHERE relatorio_id = v_rel_id;
+  v_numero_inicial := (SELECT numero FROM atividades WHERE id = v_ativ_id);
+  PERFORM pg_temp.checar('C', 'o apontamento recebe número ao ser criado no banco',
+    v_numero_inicial IS NOT NULL, 'número nulo');
+
   PERFORM pg_temp.checar('C', 'atividade nasce pendente de revisão',
     v_status = 'pendente', 'status = ' || coalesce(v_status, 'NULL'));
 
@@ -409,12 +415,40 @@ BEGIN
     PERFORM pg_temp.checar('C', 'reenvio SEM mudança mantém validado',
       v_status = 'validado', 'status = ' || coalesce(v_status, 'NULL'));
 
+    -- O FURO DO "VALIDADO QUE MUDA SOZINHO" -- e por que este teste mudou.
+    --
+    -- Até 08/09 o mecanismo era DETECTAR: se um dado do apontamento chegasse
+    -- diferente, o status voltava para 'pendente' e o revisor olhava de novo.
+    -- Este teste afirmava exatamente isso.
+    --
+    -- Em 09/09 a regra ficou mais forte, a pedido do Fábio: apontamento que já
+    -- subiu não pode ser alterado, ponto (trava_edicao_pos_envio.sql). A
+    -- alteração é IGNORADA na origem, então a medida nem chega a mudar e o
+    -- status continua 'validado'.
+    --
+    -- Impedir é melhor do que detectar depois, mas o teste tinha que
+    -- acompanhar: mantido do jeito antigo, ele falharia -- e falharia
+    -- acusando o comportamento CORRETO, que é o pior tipo de teste velho.
+    v_qtd_antes_medida := (SELECT profundidade_cm FROM atividades WHERE id = v_ativ_id);
     v_payload := jsonb_set(v_payload, '{atividades,0,profundidade_cm}', '45'::jsonb);
     PERFORM sincronizar_relatorio_rdo(v_payload);
     SELECT status_revisao INTO v_status FROM atividades WHERE id = v_ativ_id;
+
     PERFORM pg_temp.checar('C',
-      'FURO: mudar medida de atividade JÁ VALIDADA volta pra pendente',
-      v_status = 'pendente', 'status = ' || coalesce(v_status, 'NULL'));
+      'alterar medida de atividade JÁ VALIDADA é ignorado (não muda o dado)',
+      (SELECT profundidade_cm FROM atividades WHERE id = v_ativ_id) = v_qtd_antes_medida,
+      'a medida mudou para ' || coalesce((SELECT profundidade_cm::text FROM atividades WHERE id = v_ativ_id), 'NULL'));
+
+    PERFORM pg_temp.checar('C',
+      'e a atividade validada continua validada',
+      v_status = 'validado', 'status = ' || coalesce(v_status, 'NULL'));
+
+    -- O número visível não pode mudar ao longo de tudo isso: é a referência
+    -- que o operador e o revisor usam para citar o mesmo apontamento.
+    PERFORM pg_temp.checar('C', 'o número do apontamento não mudou em nenhum reenvio',
+      (SELECT numero FROM atividades WHERE id = v_ativ_id) = v_numero_inicial,
+      'número era ' || coalesce(v_numero_inicial::text,'NULL') ||
+      ' e virou ' || coalesce((SELECT numero::text FROM atividades WHERE id = v_ativ_id),'NULL'));
   ELSE
     PERFORM pg_temp.pular('C', 'reenvio de atividade devolvida volta pra pendente', v_pq);
     PERFORM pg_temp.pular('C', 'reenvio limpa o motivo da devolução', v_pq);
