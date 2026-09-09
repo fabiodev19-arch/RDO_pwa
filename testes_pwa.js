@@ -410,6 +410,38 @@ checar("nenhum handler depende de filho direto (>) para achar os campos",
   !/querySelectorAll\('[^']*(maquina-card|maquina-detalhada-card|eq-pair)[^']*>\s*(input|textarea|\.fake-select)/.test(htmlCompleto),
   "um seletor passou a usar '>' e não encontraria o campo dentro do wrapper");
 
+// ---------------------------------------------------------------------------
+// Busca no seletor de tipo de atividade
+// ---------------------------------------------------------------------------
+// Pedido do Fábio (09/09): são 50+ tipos e rolar a lista em campo é lento.
+//
+// O componente já tinha filtro -- estava desligado justamente nessa chamada.
+// E, ligado, ele ainda não serviria bem: comparava o texto cru, e o catálogo
+// tem grafia inconsistente ("Construção de Aterro" com acento, "COMBATE A
+// INCENDIO" sem). Quem digitasse "construcao" não acharia o primeiro; quem
+// digitasse "incêndio", não acharia o segundo.
+console.log("\n--- busca no seletor de tipo de atividade ---\n");
+
+checar("o seletor de tipo de atividade abre COM busca",
+  /openSheet\("Tipo de atividade"[\s\S]{0,400}\}, true\)/.test(htmlCompleto),
+  "voltou a abrir com o filtro desligado");
+
+const fonteNorm = extrairFuncao("function normalizarBusca", "function filtrarSheetList");
+const norm = new Function(fonteNorm + "; return normalizarBusca;")();
+
+[["construcao", "Construção de Aterro", "digitou sem acento, texto com acento"],
+ ["incêndio", "COMBATE A INCENDIO", "digitou com acento, texto sem acento"],
+ ["ROÇADA", "roçada mecanizada", "caixa alta e cedilha"]
+].forEach(function (c) {
+  checar("busca acha: " + c[2],
+    norm(c[1]).indexOf(norm(c[0])) !== -1,
+    '"' + c[0] + '" não encontrou "' + c[1] + '"');
+});
+
+checar("o texto de busca de cada opção também é normalizado",
+  /data-busca="'\+escAttr\(normalizarBusca\(o\)\)/.test(htmlCompleto),
+  "a opção guarda o texto cru: normalizar só a consulta não adianta");
+
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
 process.exit(erros ? 1 : 0);

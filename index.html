@@ -1069,7 +1069,7 @@
     }
     list.innerHTML = opcoes.map(function(o){
       var sel = o === valorAtual;
-      return '<button class="sheet-opt'+(sel?' selected':'')+'" data-v="'+escAttr(o)+'" data-busca="'+escAttr(o.toLowerCase())+'">'+
+      return '<button class="sheet-opt'+(sel?' selected':'')+'" data-v="'+escAttr(o)+'" data-busca="'+escAttr(normalizarBusca(o))+'">'+
         '<span>'+esc(o)+'</span>'+ (sel ? checkIcon() : '') + '</button>';
     }).join("");
     list.querySelectorAll(".sheet-opt").forEach(function(btn){
@@ -1082,11 +1082,25 @@
   // Filtra sem recriar o DOM: só alterna a classe "hidden" nos itens que já
   // existem. Reconstruir a lista inteira a cada tecla (innerHTML) era o que
   // fazia a rolagem voltar ao topo e travava um pouco em aparelhos mais fracos.
+  // Busca sem acento, nos dois sentidos.
+  //
+  // O catálogo tem grafia inconsistente -- "Construção de Aterro" com acento e
+  // "COMBATE A INCENDIO" sem. Comparando o texto cru, quem digita "construcao"
+  // não acha o primeiro e quem digita "incêndio" não acha o segundo. Em campo,
+  // com teclado de celular e pressa, é a diferença entre achar e desistir.
+  //
+  // Normalizar os dois lados resolve sem depender de arrumar o cadastro.
+  function normalizarBusca(s){
+    var t = String(s || "").toLowerCase();
+    // NFD separa a letra do acento; o replace tira os acentos que sobraram.
+    return t.normalize ? t.normalize("NFD").replace(/[̀-ͯ]/g, "") : t;
+  }
+
   function filtrarSheetList(query){
     var list = document.getElementById("sheet-list");
     var itens = list.querySelectorAll(".sheet-opt");
     if (!itens.length) return;
-    var q = query.trim().toLowerCase();
+    var q = normalizarBusca(query.trim());
     var visiveis = 0;
     itens.forEach(function(btn){
       var bate = !q || (btn.getAttribute("data-busca") || "").indexOf(q) !== -1;
@@ -2553,7 +2567,7 @@
         if (App.editAtividadeIdx === "novo") App._novaAtividade = novo;
         else r.atividades[App.editAtividadeIdx] = novo;
         render();
-      }, false);
+      }, true);   // com busca: são 50+ tipos, rolar a lista inteira em campo é lento
     };
 
     document.querySelectorAll("#main input.campo-numerico[data-k]").forEach(function(input){
