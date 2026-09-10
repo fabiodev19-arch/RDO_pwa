@@ -1181,10 +1181,32 @@
   // com teclado de celular e pressa, é a diferença entre achar e desistir.
   //
   // Normalizar os dois lados resolve sem depender de arrumar o cadastro.
+  // NFKD, e não NFD -- a diferença resolveu um defeito real (10/09).
+  //
+  // O catálogo de tarifas tem "CONSTRUÇÃO DE ATERRO - M³" e "AGULHAMENTO - M²".
+  // O ³ e o ² não estão no teclado do celular: quem procurava digitava "M3" e
+  // não achava nada. Foi por isso que a busca "funcionou no Tipo de atividade e
+  // não na Descrição" -- só a segunda lista tem esses caracteres.
+  //
+  // NFD separa letra e acento, mas deixa ³ intacto (não é acento, é um
+  // caractere de COMPATIBILIDADE). NFKD decompõe os dois: "M³" vira "M3",
+  // "M²" vira "M2", "ção" vira "cao". É a normalização certa para busca.
+  //
+  // De quebra cobre o que ainda não apareceu mas vai aparecer: ª/º, ½, ﬁ, e
+  // aspas curvas que alguns teclados inserem no lugar das retas.
+  // A segunda parte -- aspas e travessões -- veio da mesma varredura, e o
+  // exemplo é "CONSTRUÇÃO DE SAÍDAS D’ÁGUA - UN": o catálogo veio de planilha,
+  // onde o Office troca o apóstrofo reto (') pelo curvo (’) sozinho. NFKD NÃO
+  // desfaz essa troca, porque para o Unicode são dois caracteres diferentes de
+  // verdade. Quem digita no celular produz o reto e não acha o item.
+  //
+  // O mesmo vale para travessões (– —) virando hífen: planilha adora trocar.
   function normalizarBusca(s){
-    var t = String(s || "").toLowerCase();
-    // NFD separa a letra do acento; o replace tira os acentos que sobraram.
-    return t.normalize ? t.normalize("NFD").replace(/[̀-ͯ]/g, "") : t;
+    var t = String(s || "").toLowerCase()
+      .replace(/[‘’‛ʼ]/g, "'")   // aspas simples curvas -> '
+      .replace(/[“”‟]/g, '"')          // aspas duplas curvas  -> "
+      .replace(/[‐-―−]/g, "-");        // travessões e menos   -> -
+    return t.normalize ? t.normalize("NFKD").replace(/[̀-ͯ]/g, "") : t;
   }
 
   function filtrarSheetList(query){
@@ -2749,7 +2771,12 @@
       var k = sel.getAttribute("data-k");
       if (k === "tipo"){
         sel.onclick = function(){
-          openSheet("Tipo", CATALOGO.tiposHoraMaquina, a.tipo, function(v){ a.tipo = v; render(); }, false);
+          // true, e não false: era o único seletor do app que NUNCA teria busca,
+          // por maior que a lista ficasse. Hoje são 3 tipos de hora-máquina e
+          // nada muda -- o campo só aparece a partir de 7 opções. Mas no dia em
+          // que essa lista crescer, a busca aparece sozinha, sem alguém precisar
+          // lembrar de voltar aqui. Achado na varredura de 10/09.
+          openSheet("Tipo", CATALOGO.tiposHoraMaquina, a.tipo, function(v){ a.tipo = v; render(); }, true);
         };
         return;
       }

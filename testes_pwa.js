@@ -626,6 +626,65 @@ checar("a sincronização só fica verde quando TUDO subiu",
   /tudoOk\s*\?\s*"ok"\s*:\s*undefined/.test(htmlCompleto),
   "pintar de verde um envio parcial faz o operador achar que acabou");
 
+// ---------------------------------------------------------------------------
+// A busca tem que achar o que o TECLADO consegue digitar
+// ---------------------------------------------------------------------------
+// Defeito real de 10/09: a busca funcionava em "Tipo de atividade" e não em
+// "Descrição (tarifa)". A diferença não era a lista nem o filtro -- era o
+// CONTEÚDO. O catálogo de tarifas tem "M³" e "M²", e quem procura no celular
+// digita "M3": não há ³ no teclado. E tem "SAÍDAS D’ÁGUA" com apóstrofo curvo
+// (o Office troca sozinho ao salvar a planilha), enquanto o teclado dá o reto.
+console.log("\n--- a busca acha o que o teclado digita ---\n");
+
+// corpoDaFuncao, e NÃO extrairFuncao com marcador de fim: openSheet aparece
+// ANTES de normalizarBusca no arquivo, então o marcador casaria antes do
+// começo. Terceira vez que essa armadilha aparece nesta suíte -- daqui em
+// diante, para recortar função, usar sempre a contagem de chaves.
+const buscar = new Function(corpoDaFuncao("normalizarBusca") + "; return normalizarBusca;")();
+function achaNaBusca(item, digitado) {
+  return buscar(item).indexOf(buscar(String(digitado).trim())) !== -1;
+}
+
+[["CONSTRUÇÃO DE ATERRO - M³", "aterro - m3", "M³ procurado como M3"],
+ ["AGULHAMENTO - M²", "agulhamento - m2", "M² procurado como M2"],
+ ["CONSTRUÇÃO DE SAÍDAS D’ÁGUA - UN", "saidas d'agua", "apóstrofo curvo procurado com o reto"],
+ ["TRANSPORTE – DIÁRIA", "transporte - diaria", "travessão procurado como hífen"],
+ ["CAMINHÃO CAÇAMBA - HT", "cacamba", "sem cedilha e sem til"],
+ ["CONSTRUÇÃO DE ATERRO - M³", "CONSTRUCAO", "maiúscula sem acento"]
+].forEach(function (c) {
+  checar("busca acha: " + c[2], achaNaBusca(c[0], c[1]),
+    JSON.stringify(c[1]) + " não encontrou " + JSON.stringify(c[0]));
+});
+
+// NFKD é o que faz ³ virar 3. Com NFD (a versão anterior) o teste acima falha.
+checar("a normalização usa NFKD, não NFD",
+  /normalize\("NFKD"\)/.test(htmlCompleto),
+  "NFD não desfaz ³ nem ² -- foi exatamente o defeito de 10/09");
+
+// Antecipação pedida pelo Fábio: nenhum seletor pode ficar sem filtro, senão
+// no dia em que a lista crescer ninguém lembra de voltar aqui.
+const semFiltro = [];
+let posSheet = 0;
+while ((posSheet = htmlCompleto.indexOf("openSheet(", posSheet)) !== -1) {
+  if (/function\s+$/.test(htmlCompleto.slice(Math.max(0, posSheet - 12), posSheet))) { posSheet += 10; continue; }
+  const abre = htmlCompleto.indexOf("(", posSheet);
+  let nivel = 0, fimCh = -1;
+  for (let k = abre; k < htmlCompleto.length; k++) {
+    if (htmlCompleto[k] === "(") nivel++;
+    else if (htmlCompleto[k] === ")") { nivel--; if (nivel === 0) { fimCh = k; break; } }
+  }
+  if (fimCh === -1) break;
+  const ch = htmlCompleto.slice(posSheet, fimCh + 1);
+  if (!/,\s*true\s*$/.test(ch.slice(0, -1).trim())) {
+    const t = ch.match(/openSheet\(\s*"([^"]*)"/);
+    semFiltro.push(t ? t[1] : "(dinâmico)");
+  }
+  posSheet = fimCh;
+}
+checar("todo seletor pede filtro, para a busca nascer sozinha se a lista crescer",
+  semFiltro.length === 0,
+  "sem filtro: " + semFiltro.join(", "));
+
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
 process.exit(erros ? 1 : 0);
