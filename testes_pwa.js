@@ -613,9 +613,25 @@ checar("o toast fica no topo, à direita",
   /top:/.test(regraToast) && /right:/.test(regraToast) && !/bottom:/.test(regraToast),
   "continua ancorado no rodapé: " + regraToast.slice(0, 90));
 
-checar("existe a variante de sucesso, em verde",
-  /\.toast\.ok\{[^}]*--success/.test(cssPwa),
+const regraToastOk = (cssPwa.match(/\.toast\.ok\{[^}]*\}/) || [""])[0];
+checar("existe a variante de sucesso",
+  regraToastOk.length > 0,
   "sem a variante, sucesso e erro têm a mesma cara");
+
+// O aviso NÃO pode usar --success-bg: essa variável é rgba(...,.15), pensada
+// para o fundo de uma pastilha pequena. Num aviso flutuante ela fica 15%
+// pintada e some no que está atrás -- foi exatamente o que aconteceu, e o
+// Fábio devolveu na hora ("transparente e praticamente invisível").
+checar("o fundo do aviso é sólido, não a cor translúcida do badge",
+  !/--success-bg/.test(regraToastOk) && !/rgba\([^)]*0?\.\d+\s*\)/.test(regraToastOk.replace(/box-shadow:[^;]*;/g, "")),
+  "voltou a usar cor com transparência: " + regraToastOk.slice(0, 120));
+
+// Contraste medido em ferramentas/medir_toast.js: 5:1 no claro, 8,7:1 no
+// escuro. O tema escuro precisa da sua própria regra -- verde escuro sobre
+// tela escura destaca pouco, então lá o verde é claro e o texto é escuro.
+checar("o tema escuro tem cor própria para o aviso",
+  /html\[data-theme="dark"\]\s*\.toast\.ok\{/.test(cssPwa),
+  "sem regra própria, o escuro herda a do claro e o contraste cai");
 
 const fonteToast = extrairFuncao("function showToast", "function checkToastIcon");
 checar("showToast aceita o tipo sem quebrar quem já chamava com um argumento",

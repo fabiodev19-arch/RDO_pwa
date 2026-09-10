@@ -420,9 +420,38 @@
     display:flex; align-items:center; gap:8px;
   }
   .toast.show{opacity:1; transform:translateY(0);}
-  /* Verde com check no sucesso -- mesmo tom do --success usado no resto do app. */
-  .toast.ok{background:var(--success-bg); border-color:var(--success); color:var(--success);}
-  .toast svg{width:16px; height:16px; flex-shrink:0;}
+
+  /* Sucesso: verde SÓLIDO com texto branco.
+     A primeira versão usava --success-bg, que é rgba(...,.15) -- uma cor de
+     FUNDO DE BADGE, pensada para uma pastilha pequena dentro de um card claro.
+     Aplicada num aviso flutuante ela some: 15% de tinta sobre o que estiver
+     atrás, com o texto no mesmo verde. O Fábio viu na hora ("ficou transparente
+     e praticamente invisível").
+     Aviso de sistema tem que ser lido de relance, sem procurar. */
+  /* Cores PRÓPRIAS do aviso, não as do badge.
+     Reaproveitar --success dava 4,3:1 de contraste no tema claro e 3,1:1 no
+     escuro -- medido, não estimado (ferramentas/medir_toast.js). O mínimo
+     legível é 4,5:1. Aquele verde foi escolhido para ser TEXTO sobre fundo
+     claro, não FUNDO de texto branco; são usos opostos.
+     No tema escuro a saída é invertida: verde claro com texto quase preto.
+     Verde escuro sobre tela escura destacaria pouco, e é justamente destacar
+     que o aviso precisa fazer. */
+  .toast.ok{
+    background:#15803D; border-color:#15803D; color:#fff;
+    box-shadow:0 8px 24px rgba(0,0,0,.35);
+  }
+  html[data-theme="dark"] .toast.ok{
+    background:#34D399; border-color:#34D399; color:#04231A;
+  }
+  .toast.ok svg{color:currentColor;}
+  .toast svg{width:18px; height:18px; flex-shrink:0;}
+  /* Entrada com um pulo curto: movimento é o que faz o olho perceber que algo
+     apareceu. Só na entrada -- repetir enquanto está na tela vira distração. */
+  .toast.show.ok{animation:toastEntra .28s cubic-bezier(.2,.9,.3,1.4);}
+  @keyframes toastEntra{
+    0%{transform:translateY(-14px) scale(.96);}
+    100%{transform:translateY(0) scale(1);}
+  }
 
   /* ---------- Sucesso / resultado do envio ---------- */
   .sucesso-wrap{display:flex; flex-direction:column; align-items:center; justify-content:center;
