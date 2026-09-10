@@ -857,6 +857,82 @@ checar("correspondência exata vence a aproximada",
   formularioCom({ "PATROLAMENTO": "padrao", "Patrolamento": "hora_maquina" }, "PATROLAMENTO") === "padrao",
   "o aproximado ganhou do exato: aí quem decide é a ordem das chaves");
 
+// ---------------------------------------------------------------------------
+// Texto de ajuda dentro de um campo não pode subir por cima dele
+// ---------------------------------------------------------------------------
+// .helper-text tem margin-top:-6px, que existe para colar a ajuda a um bloco
+// que JÁ tem margem inferior. Dentro de um .field ela vem logo depois do
+// campo, que não tem margem -- e o texto subia 6px por cima do seletor.
+// Medido no arquivo real: seletor terminando em 82px, texto começando em 76px.
+// Apareceu nos campos de Descrição (tarifa) e nos derivados, os primeiros a
+// pôr ajuda dentro de um .field.
+console.log("\n--- ajuda dentro do campo ---\n");
+
+const regraAjudaNoField = (cssPwa.match(/\.field\s*>\s*\.helper-text\{[^}]*\}/) || [""])[0];
+checar("existe regra própria para ajuda dentro de .field",
+  regraAjudaNoField.length > 0,
+  "sem ela vale o margin-top:-6px do .helper-text, que sobrepõe o campo");
+
+checar("essa regra anula a margem negativa",
+  /margin-top:\s*[0-9]/.test(regraAjudaNoField) && !/margin-top:\s*-/.test(regraAjudaNoField),
+  "a margem continua negativa: " + regraAjudaNoField);
+
+// O -6px do .helper-text geral continua valendo -- ele está certo onde a ajuda
+// vem depois de um bloco com margem. Mexer nele consertaria um caso e
+// estragaria os outros.
+checar("o .helper-text geral segue com a margem negativa",
+  /\.helper-text\{[^}]*margin:\s*-6px/.test(cssPwa),
+  "mudaram a regra geral: isso desloca todas as outras ajudas do app");
+
+// ---------------------------------------------------------------------------
+// Trecho é texto livre, e continua obedecendo às Configurações
+// ---------------------------------------------------------------------------
+// Não existe cadastro de trechos -- o catálogo tem duas entradas de exemplo.
+// Uma lista com duas opções obriga o operador a escolher uma que não é a dele.
+// Aqui roda camposAtividade DE VERDADE, com stubs, em vez de conferir a grafia
+// da linha: o que importa é o campo que sai, não como ele foi escrito.
+console.log("\n--- Trecho como texto livre ---\n");
+
+const montarCampos = new Function(
+  // formularioDaAtividade real, para o padrão continuar sendo o padrão
+  corpoDaFuncao("normalizarBusca") + corpoDaFuncao("formularioDaAtividade") +
+  "; var REGRAS = { formulario_atividade: {} };" +
+  // reqDinamico é o que a tela de Configurações alimenta; o stub devolve o que
+  // mandarem, para dar pra provar que a configuração continua chegando ao campo
+  "; var obrigatorio = false;" +
+  "; function reqDinamico(){ return obrigatorio; }" +
+  "; var CATALOGO = { trechos: ['CAP-05','106'] };" +
+  corpoDaFuncao("camposAtividade") +
+  "; return function(req){ obrigatorio = req; return camposAtividade('PATROLAMENTO',''); };"
+)();
+
+const trechoOpcional = montarCampos(false).filter(function (c) { return c.k === "trecho"; })[0];
+const trechoObrigatorio = montarCampos(true).filter(function (c) { return c.k === "trecho"; })[0];
+
+checar("o campo Trecho continua existindo no formulário padrão",
+  !!trechoOpcional, "sumiu do formulário");
+
+checar("Trecho é campo de digitar, não lista",
+  trechoOpcional && trechoOpcional.t === "text",
+  "veio como " + (trechoOpcional && trechoOpcional.t));
+
+checar("Trecho não carrega mais a lista de opções",
+  trechoOpcional && !trechoOpcional.opts,
+  "ainda tem opts -- o seletor voltaria a abrir");
+
+// A queixa do Fábio foi explícita: muda o jeito de preencher, NÃO a regra.
+checar("a configuração de obrigatoriedade continua chegando ao Trecho",
+  trechoOpcional && trechoOpcional.req === false && trechoObrigatorio && trechoObrigatorio.req === true,
+  "req deixou de vir de reqDinamico: opcional=" +
+    (trechoOpcional && trechoOpcional.req) + ", obrigatório=" + (trechoObrigatorio && trechoObrigatorio.req));
+
+// campoHtml só desenha input de digitar para t:"text", e o fio que salva o que
+// foi digitado procura input.campo-texto[data-k] -- sem essa classe, o operador
+// digita e nada é gravado.
+checar("campoHtml desenha input.campo-texto para t:\"text\"",
+  /campo\.t === "text"[\s\S]{0,240}?class="campo-texto"/.test(corpoDaFuncao("campoHtml")),
+  "o ramo de texto não produz a classe que o wireCampoTexto procura");
+
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
 process.exit(erros ? 1 : 0);

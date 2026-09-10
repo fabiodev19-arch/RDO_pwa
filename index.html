@@ -184,6 +184,15 @@
     color:var(--text-dim); margin:20px 0 10px;}
   .section-title:first-child{margin-top:0;}
   .helper-text{font-size:12px; color:var(--text-dim); margin:-6px 0 14px; line-height:1.5;}
+  /* Dentro de um .field o texto de ajuda NÃO pode ter margem negativa.
+     O -6px acima existe para colar a ajuda a um bloco que já tem margem
+     inferior; num .field ela vem logo depois do campo, que não tem margem --
+     e o texto subia 6px POR CIMA do seletor. Medido no arquivo real em 320,
+     360 e 412px (ferramentas/medir_helper_descricao.js): o seletor terminava
+     em 82px e o texto começava em 76px, nas três.
+     Apareceu com os campos de Descrição (tarifa) e com os derivados (DMT,
+     Nível, Unidade), que foram os primeiros a pôr ajuda dentro de um .field. */
+  .field > .helper-text{margin-top:6px; margin-bottom:0;}
   .sync-agora-row{
     display:flex; align-items:center; justify-content:space-between; gap:10px;
     font-size:12px; color:var(--text-dim); margin:-6px 0 14px; line-height:1.5;
@@ -968,7 +977,17 @@
     // código próprio. Digitar um DMT à parte criaria dois números para a mesma
     // distância, com chance de divergirem. Agora ele é mostrado a partir da
     // descrição -- ver camposDerivadosHtml().
-    campos.push({ k:"trecho", l:"Trecho", t:"select", opts:CATALOGO.trechos, req:reqDinamico(cliente,tipo,"trecho") });
+    // Trecho é TEXTO LIVRE, não lista (10/09). Não existe cadastro de trechos
+    // de verdade -- o catálogo tem duas entradas de exemplo, e uma lista com
+    // duas opções obriga o operador a escolher uma que não é a dele. Enquanto
+    // não houver cadastro, quem sabe o trecho é quem está na estrada.
+    //
+    // O que NÃO mudou: a configuração do campo na tela de Configurações segue
+    // valendo -- `reqDinamico` continua decidindo se ele é obrigatório por
+    // cliente e tipo de atividade. Mudou o jeito de preencher, não a regra.
+    // (Na máquina detalhada ele já era texto livre desde sempre; agora os dois
+    // formulários concordam.)
+    campos.push({ k:"trecho", l:"Trecho", t:"text", ph:"Ex.: CAP-05", req:reqDinamico(cliente,tipo,"trecho") });
     campos.push({ k:"observacao", l:"Observação", t:"textarea", req:reqDinamico(cliente,tipo,"observacao"), ph:"Descreva o serviço executado" });
     return campos;
   }
