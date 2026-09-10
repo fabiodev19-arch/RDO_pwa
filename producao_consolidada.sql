@@ -47,13 +47,25 @@
 -- resultado e permite usar em índice, se um dia precisar.
 --
 -- PENDÊNCIA CONHECIDA, e é da planilha, não da tradução: só 'HT' consolida por
--- horas. O catálogo também tem 'HD' (9 itens) e 'DIÁRIA' (11), que não são
--- área e mesmo assim caem em largura × comprimento. Pode ser que essas linhas
--- sempre venham com quantidade preenchida, e aí nunca chegam nesse ramo -- ou
--- pode ser um furo que ninguém notou. Perguntado ao Fábio em 09/09, sem
--- resposta ainda. Mantido idêntico ao Excel de propósito: divergir aqui faria o
--- painel discordar do número que o escritório usa hoje, e um relatório que
--- discorda do outro é pior que um relatório com um furo conhecido.
+-- horas. 'HD' e 'DIÁRIA' não são área e mesmo assim caem em largura ×
+-- comprimento.
+--
+-- CONFERIDO na origem em 09/09, e é furo real -- não a hipótese inocente de que
+-- essas linhas sempre viriam com quantidade preenchida. Nas 2.126 linhas da aba
+-- APONTAMENTO: as 1.466 de 'UN' têm quantidade sempre (essas de fato nunca
+-- chegam aqui), mas as 7 de 'HD' e as 3 de 'DIÁRIA' não têm nenhuma. As 7 de
+-- 'HD' são todas PÁ CARREGADEIRA com horímetro preenchido -- somam ~60 horas --
+-- e a produção consolidada saiu ZERO em todas.
+--
+-- Sai zero em vez de número errado porque comprimento e largura estão vazios.
+-- É sorte: número errado passaria despercebido; zero pelo menos é visível.
+--
+-- Mantido idêntico ao Excel MESMO ASSIM, de propósito. Corrigir aqui faria o
+-- painel discordar do número que o escritório usa hoje, e essa divergência tem
+-- que ser uma decisão do Fábio, não uma surpresa que ele descobre no
+-- fechamento. Se ele decidir que 'HD' consolida por horas e 'DIÁRIA' vale 1,
+-- são duas linhas neste CASE -- e a bateria acusa a mudança na hora, porque os
+-- dois ramos já têm teste. Detalhes e números no ESTADO.md, em "Pendências".
 CREATE OR REPLACE FUNCTION public.producao_consolidada(
   p_quantidade    numeric,
   p_unidade       text,
