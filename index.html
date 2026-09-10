@@ -1164,6 +1164,24 @@
     function aplicar(){
       var overlay = document.getElementById("sheet-overlay");
       if (!overlay || !overlay.classList.contains("show")) return;
+
+      // O OVERLAY é que precisa encolher, não só o sheet.
+      //
+      // Foi o que faltou na primeira tentativa (10/09): eu reduzia a altura do
+      // .sheet e pronto. Só que o .sheet é ancorado no FUNDO do overlay
+      // (align-items:flex-end), e o overlay é `inset:0` -- a tela inteira,
+      // incluindo a faixa que o teclado cobre. Encolher o sheet o deixava
+      // menor, e no mesmo lugar: atrás do teclado.
+      //
+      // Prendendo o overlay à área visível, o "fundo" dele passa a ser o topo
+      // do teclado, e o sheet sobe junto sem precisar de translate nenhum.
+      //
+      // offsetTop entra porque o navegador pode ter rolado a página para
+      // mostrar o campo focado; sem ele o overlay descolaria do que se vê.
+      overlay.style.top = vv.offsetTop + "px";
+      overlay.style.height = vv.height + "px";
+      overlay.style.bottom = "auto";
+
       // 12px de folga para o sheet não encostar na borda do teclado.
       sheet.style.maxHeight = Math.max(220, vv.height - 12) + "px";
     }
@@ -1176,8 +1194,10 @@
         _vvLigado = true;
       }
     } else {
-      // Fechou: devolve o controle ao CSS, senão a altura calculada com o
-      // teclado aberto ficaria grudada na próxima abertura.
+      // Fechou: devolve o controle ao CSS, senão as medidas calculadas com o
+      // teclado aberto ficariam grudadas na próxima abertura.
+      var ov = document.getElementById("sheet-overlay");
+      if (ov){ ov.style.top = ""; ov.style.height = ""; ov.style.bottom = ""; }
       sheet.style.maxHeight = "";
     }
   }

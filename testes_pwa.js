@@ -582,6 +582,19 @@ checar("o seletor se ajusta ao teclado pelo visualViewport",
   /visualViewport/.test(htmlCompleto) && /function ajustarSheetAoTeclado/.test(htmlCompleto),
   "sem isto a lista fica atrás do teclado ao digitar na busca");
 
+// O que faltou na primeira tentativa: encolher só o .sheet não adianta.
+// Ele é ancorado no FUNDO do overlay (align-items:flex-end), e o overlay é
+// inset:0 -- a tela toda, teclado incluído. O sheet ficava menor e no mesmo
+// lugar. Quem precisa ser preso à área visível é o OVERLAY.
+const fonteAjuste = corpoDaFuncao("ajustarSheetAoTeclado");
+checar("é o OVERLAY que é preso à área visível, não só o sheet",
+  /overlay\.style\.height\s*=/.test(fonteAjuste) && /overlay\.style\.top\s*=/.test(fonteAjuste),
+  "só o sheet encolhe: ele fica menor e continua atrás do teclado");
+
+checar("fechar devolve as medidas do overlay ao CSS",
+  /ov\.style\.height\s*=\s*""/.test(fonteAjuste) && /ov\.style\.top\s*=\s*""/.test(fonteAjuste),
+  "as medidas do teclado ficariam grudadas na próxima abertura");
+
 // Aqui NÃO dá para usar extrairFuncao com marcador de fim: o texto que segue
 // closeSheet (`document.getElementById("sheet-overlay")`) também aparece DENTRO
 // dela e mais acima no arquivo, então o marcador casaria antes do começo. É o
