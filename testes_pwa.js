@@ -714,6 +714,52 @@ checar("todo seletor pede filtro, para a busca nascer sozinha se a lista crescer
   semFiltro.length === 0,
   "sem filtro: " + semFiltro.join(", "));
 
+// ---------------------------------------------------------------------------
+// DMT: vem da descrição, não do teclado
+// ---------------------------------------------------------------------------
+// O campo DMT existia e NUNCA aparecia: estava condicionado a
+// `tipo === "Transporte de Material"` e o catálogo entrega "TRANSPORTE DE
+// MATERIAL" em maiúsculas. Foi removido em vez de consertado -- o DMT já está
+// escrito na descrição da tarifa ("TRANSPORTE DE BRITA (DMT 35 - 40 km) - M³"),
+// e cada faixa é uma tarifa com código próprio. Digitar um DMT à parte criaria
+// dois números para a mesma distância, com chance de divergirem.
+console.log("\n--- DMT derivado da descrição ---\n");
+
+const extrairDmt = new Function(corpoDaFuncao("dmtDaDescricao") + "; return dmtDaDescricao;")();
+
+[["TRANSPORTE DE BRITA (DMT 35 - 40 km) - M³", "35 - 40 km"],
+ ["TRANSPORTE DE SOLOS (DMT 0 - 2,5 km) - M³", "0 - 2,5 km"],
+ ["TRANSPORTE DE BRITA (DMT 100 - 125 km) - M³", "100 - 125 km"],
+ ["TRANSPORTE DE SOLOS (DMT 12,5 - 15 km) - M³", "12,5 - 15 km"]
+].forEach(function (c) {
+  checar("extrai a faixa de " + JSON.stringify(c[1]),
+    extrairDmt(c[0]) === c[1],
+    "veio " + JSON.stringify(extrairDmt(c[0])));
+});
+
+// Descrição sem DMT não pode inventar um campo vazio na tela.
+[["CONSTRUÇÃO DE ATERRO - M³"], ["CAMINHÃO CAÇAMBA - HT"], [""], [null]].forEach(function (c) {
+  checar("descrição sem DMT não produz campo: " + JSON.stringify(c[0]),
+    extrairDmt(c[0]) === null,
+    "inventou " + JSON.stringify(extrairDmt(c[0])));
+});
+
+// Olha DENTRO da função, não num raio de caracteres a partir do nome dela.
+// A primeira versão fazia isso e acusava "voltou a ser digitável" -- porque
+// logo depois da CHAMADA vem o campo UP, que tem <input>. Nada a ver com o DMT.
+const corpoDmt = corpoDaFuncao("campoDmtHtml") + corpoDaFuncao("campoDmtCardHtml");
+checar("o campo de DMT é de leitura, sem input",
+  /campo-derivado/.test(corpoDmt) && !/<input/.test(corpoDmt),
+  "voltou a ser digitável -- aí passam a existir dois DMT para a mesma distância");
+
+checar("o DMT aparece também nos cards de máquina",
+  (htmlCompleto.match(/campoDmtCardHtml\(m\.descricao\)/g) || []).length === 2,
+  "nos formulários de máquina a descrição é POR MÁQUINA, e o DMT tem que acompanhar");
+
+checar("o campo DMT digitável foi mesmo removido",
+  !/k:"dmt_km_inicial"/.test(htmlCompleto) && !/k:"dmt_km_final"/.test(htmlCompleto),
+  "o campo antigo voltou: ele nunca aparecia, e agora duplicaria o derivado");
+
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
 process.exit(erros ? 1 : 0);

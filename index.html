@@ -281,6 +281,16 @@
   }
   .campo-rotulado > input, .campo-rotulado > .fake-select{width:100%;}
 
+  /* Valor DERIVADO de outro campo -- hoje só o DMT, que sai da descrição da
+     tarifa. Parece campo (mesma caixa, mesma altura) para não quebrar o ritmo
+     do formulário, mas sem fundo de campo editável e sem seta: não há nada
+     para tocar aqui. Editar o DMT é trocar a descrição. */
+  .campo-derivado{
+    width:100%; padding:12px 13px; border-radius:var(--radius-sm);
+    border:1px dashed var(--border); background:transparent;
+    color:var(--text); font-size:14.5px; font-weight:600;
+  }
+
   .maquina-card{
     background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
     padding:12px; margin-bottom:9px;
@@ -923,10 +933,15 @@
       { k:"largura_m", l:"Largura (m)", t:"number", req:reqDinamico(cliente,tipo,"largura_m") },
       { k:"profundidade_cm", l:"Profundidade (cm)", t:"number", req:reqDinamico(cliente,tipo,"profundidade_cm") }
     ];
-    if (tipo === "Transporte de Material"){
-      campos.push({ k:"dmt_km_inicial", l:"DMT inicial (km)", t:"number", step:"0.1", req:reqDinamico(cliente,tipo,"dmt_km_inicial") });
-      campos.push({ k:"dmt_km_final", l:"DMT final (km)", t:"number", step:"0.1", req:reqDinamico(cliente,tipo,"dmt_km_final") });
-    }
+    // Aqui havia dois campos de DMT digitáveis, condicionados a
+    // `tipo === "Transporte de Material"`. Nunca apareceram: o catálogo entrega
+    // "TRANSPORTE DE MATERIAL" em maiúsculas e a comparação era exata.
+    //
+    // Não foram consertados, foram removidos: o DMT já está na descrição da
+    // tarifa ("TRANSPORTE DE BRITA (DMT 35 - 40 km) - M³"), e cada faixa tem
+    // código próprio. Digitar um DMT à parte criaria dois números para a mesma
+    // distância, com chance de divergirem. Agora ele é mostrado a partir da
+    // descrição -- ver campoDmtHtml().
     campos.push({ k:"trecho", l:"Trecho", t:"select", opts:CATALOGO.trechos, req:reqDinamico(cliente,tipo,"trecho") });
     campos.push({ k:"observacao", l:"Observação", t:"textarea", req:reqDinamico(cliente,tipo,"observacao"), ph:"Descreva o serviço executado" });
     return campos;
@@ -1947,6 +1962,42 @@
       esc(valor || "Selecionar descrição")+'</span>'+chevronIcon()+'</div>';
   }
 
+  // O DMT já vem escrito na descrição da tarifa, e é de lá que ele sai.
+  //
+  // O catálogo tem 35 itens no formato "TRANSPORTE DE BRITA (DMT 35 - 40 km) -
+  // M³" -- cada faixa é uma tarifa com código próprio. Ou seja: a distância não
+  // é um número que o operador mede e digita, é uma FAIXA que ele já escolheu
+  // ao escolher a descrição.
+  //
+  // Existia um campo DMT digitável no formulário padrão, condicionado a
+  // `tipo === "Transporte de Material"`. Nunca apareceu: o catálogo entrega
+  // "TRANSPORTE DE MATERIAL" em maiúsculas e a comparação era exata. Foi
+  // removido -- não faria falta mesmo funcionando, porque digitar um DMT que
+  // divergisse da faixa da tarifa criaria dois números para a mesma coisa.
+  function dmtDaDescricao(descricao){
+    if (!descricao) return null;
+    var m = String(descricao).match(/\(\s*DMT\s*([^)]+?)\s*\)/i);
+    return m ? m[1].trim() : null;
+  }
+
+  // Campo de leitura, sem input: não há o que o operador digitar aqui. Só
+  // aparece quando a descrição escolhida tem DMT -- nas outras, nem existe.
+  function campoDmtHtml(descricao){
+    var dmt = dmtDaDescricao(descricao);
+    if (!dmt) return "";
+    return '<div class="field"><label>DMT</label>'+
+      '<div class="campo-derivado">'+esc(dmt)+'</div>'+
+      '<p class="helper-text">Vem da descrição escolhida. Para mudar a distância, troque a descrição.</p></div>';
+  }
+
+  // Mesma coisa, no layout dos cards de máquina -- lá a descrição é por
+  // máquina, então o DMT também é.
+  function campoDmtCardHtml(descricao){
+    var dmt = dmtDaDescricao(descricao);
+    if (!dmt) return "";
+    return rotulado("DMT", '<div class="campo-derivado">'+esc(dmt)+'</div>');
+  }
+
   // Abre a lista das 108 descrições COM busca -- sem ela, rolar 108 itens em
   // campo é inviável. O `true` no fim é o que liga o filtro.
   function abrirSeletorDescricao(valorAtual, aoEscolher){
@@ -2669,6 +2720,7 @@
           '</div>'+
           rotulado("Descrição (tarifa)",
             seletorDescricaoHtml(m.descricao, 'data-maqidx="'+idx+'" data-campo="descricao"'))+
+          campoDmtCardHtml(m.descricao)+
           '<div class="row-2">'+
             rotulado("Hora inicial",
               '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="'+phDinamico(r?r.cliente:"",a.tipo_atividade,"hora_inicial","Hora inicial")+'" data-maqidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">')+
@@ -2702,6 +2754,7 @@
           '</div>'+
           rotulado("Descrição (tarifa)",
             seletorDescricaoHtml(m.descricao, 'data-mdidx="'+idx+'" data-campo="descricao"'))+
+          campoDmtCardHtml(m.descricao)+
           rotulado(phDinamico(clienteAtual,a.tipo_atividade,"up","UP (Talhão)"),
             '<input class="campo-solo campo-texto-solo" type="text" data-mdidx="'+idx+'" data-campo="up" value="'+escAttr(m.up||"")+'">')+
           rotulado(phDinamico(clienteAtual,a.tipo_atividade,"trecho","Trecho"),
@@ -2739,6 +2792,8 @@
       html += '<div class="field"><label>Descrição (tarifa) (opcional)</label>'+
         seletorDescricaoHtml(a.descricao_atividade, 'id="sel-descricao-ativ"')+
         '<p class="helper-text">Define o código de tarifa e a unidade de medida.</p></div>';
+      // Logo abaixo da descrição, porque é dela que sai.
+      html += campoDmtHtml(a.descricao_atividade);
 
       var upObrigatorioPadrao = reqDinamico(r ? r.cliente : "", a.tipo_atividade, "up");
       html += '<div class="field"><label>UP (Talhão)'+(upObrigatorioPadrao?' <span class="req">*</span>':' (opcional)')+'</label>'+
