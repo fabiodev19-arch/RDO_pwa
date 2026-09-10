@@ -486,6 +486,70 @@ checar("o campo de dentro de .field continua com a sua caixa",
   temCaixa(".field .fake-select"),
   "a regra original sumiu -- isso derruba a caixa do resto do formulário");
 
+// ---------------------------------------------------------------------------
+// Descrição de atividade (o item de tarifa)
+// ---------------------------------------------------------------------------
+// Campo novo, vindo da planilha de produtividade: é ele que define o código de
+// tarifa e a unidade, e a unidade decide a fórmula da produção consolidada.
+//
+// O ponto delicado é ONDE a descrição mora. Depende do formulário:
+//   padrão de obra      -> uma por apontamento (a.descricao_atividade)
+//   máquinas detalhado  -> uma POR MÁQUINA (dados.descricao)
+//   hora máquina        -> uma POR MÁQUINA (dados.descricao)
+// Errar isso significa a escavadeira em M³ e o caminhão em HT dividirem a
+// mesma tarifa -- que é o defeito que estes testes existem para pegar.
+console.log("\n--- descrição de atividade (tarifa) ---\n");
+
+checar("o catálogo mapeia a categoria descricao_atividade",
+  /descricao_atividade:\s*"descricoesAtividade"/.test(htmlCompleto),
+  "sem o mapa, listar_cadastros() traz a lista e o app a ignora em silêncio");
+
+checar("o seletor de descrição abre COM busca",
+  /openSheet\("Descrição \(tarifa\)"[\s\S]{0,200}?,\s*true\s*\)/.test(htmlCompleto),
+  "108 itens sem busca é inviável em campo");
+
+checar("o payload manda a descrição do apontamento (formulário padrão)",
+  /descricao_atividade:\s*a\.descricao_atividade/.test(htmlCompleto),
+  "o campo apareceria na tela e nunca chegaria ao banco");
+
+// Um só teste por formulário não basta: o payload monta 'dados' em dois ramos
+// separados, e é fácil lembrar de um e esquecer do outro.
+//
+// A âncora é `var maquinasPayload`, e não `formulario === "..."`: essa
+// comparação aparece 5 vezes no arquivo, e a primeira fica em outra função,
+// 1500 linhas antes. Ancorado nela, o teste lia o trecho errado e acusava um
+// defeito que não existia -- foi o que aconteceu na primeira versão dele.
+const iniPayload = htmlCompleto.indexOf("var maquinasPayload");
+if (iniPayload === -1) {
+  checar("achei o trecho do payload das máquinas", false,
+    "a função de payload mudou de forma -- os dois testes abaixo não valem nada sem ela");
+}
+const trechoPayload = htmlCompleto.slice(iniPayload, iniPayload + 1200);
+
+["hora_maquina", "maquinas_detalhado"].forEach(function (form) {
+  const ini = trechoPayload.indexOf('formulario === "' + form + '"');
+  const ramo = trechoPayload.slice(ini, ini + 500);
+  checar("o payload manda a descrição por máquina em " + form,
+    ini !== -1 && /descricao:\s*m\.descricao/.test(ramo),
+    "as máquinas desse formulário iriam sem tarifa própria");
+});
+
+checar("os três formulários oferecem o campo na tela",
+  (htmlCompleto.match(/seletorDescricaoHtml\(/g) || []).length >= 3,
+  "algum formulário ficou sem o campo");
+
+checar("cada campo de descrição tem quem o ligue",
+  /\.fake-select\[data-campo="descricao"\][\s\S]{0,400}?abrirSeletorDescricao/.test(htmlCompleto) &&
+  /sel-descricao-ativ[\s\S]{0,200}?abrirSeletorDescricao/.test(htmlCompleto),
+  "o campo abriria a lista e não gravaria, ou nem abriria");
+
+// A lista real vem do banco. Uma cópia embutida aqui envelheceria sozinha
+// quando a tarifa mudasse, e ninguém perceberia -- o app mostraria itens que
+// já não existem.
+checar("o catálogo local NÃO traz uma cópia das descrições",
+  /descricoesAtividade:\s*\[\s*\]/.test(htmlCompleto),
+  "há uma lista embutida: ela vira uma segunda verdade e envelhece sozinha");
+
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
 process.exit(erros ? 1 : 0);

@@ -497,7 +497,13 @@
     tiposAtividade: ["Construção de Aterro","Limpeza de Camada Vegetal","Carregamento de Material","Transporte de Material","Hora Máquina Trabalhada","Construção de Mini Curva","Abertura de Estrada","Patrolamento"],
     tiposHoraMaquina: ["Carregamento","Transporte","Deslocamento"],
     equipamentos: ["ESH-18","MN-16","PC-26-03","RC-09","CP-03","CB-20","CB-22"],
-    operadores: ["Leandro Félix","Leandro Recalde","Cherri dos Santos","Silvanei Costa","Antônio Cleonildo","Reginaldo da Silva","Gilberto Rodrigues","Elson","Valmir","Edwilson","Luciano"]
+    operadores: ["Leandro Félix","Leandro Recalde","Cherri dos Santos","Silvanei Costa","Antônio Cleonildo","Reginaldo da Silva","Gilberto Rodrigues","Elson","Valmir","Edwilson","Luciano"],
+    // Vazio de propósito: são 108 itens de tarifa, e a lista real vem do banco
+    // em listar_cadastros(). Repetir aqui só criaria uma segunda verdade que
+    // envelheceria sozinha -- a tarifa muda, e este arquivo não saberia.
+    // Enquanto o catálogo não chega, o campo aparece sem opções em vez de
+    // oferecer uma lista errada.
+    descricoesAtividade: []
   };
 
   // Nomes das categorias no banco (singular) -> chave correspondente aqui no
@@ -507,7 +513,8 @@
     equipe_frente: "equipesFrente", fazenda: "fazendas", encarregado: "encarregados",
     supervisor: "supervisores", tecnico_arauco: "tecnicosArauco", supervisor_arauco: "supervisoresArauco",
     trecho: "trechos", tipo_atividade: "tiposAtividade", tipo_hora_maquina: "tiposHoraMaquina",
-    equipamento: "equipamentos", operador: "operadores"
+    equipamento: "equipamentos", operador: "operadores",
+    descricao_atividade: "descricoesAtividade"
   };
 
   /* ======================= SUPABASE ======================= */
@@ -1766,6 +1773,30 @@
     return '<div class="campo-rotulado"><label>'+esc(rotulo)+'</label>'+htmlCampo+'</div>';
   }
 
+  // Campo da descrição de tarifa. Mesmo seletor de sempre, só que o texto do
+  // placeholder é diferente do "Selecionar" genérico: são 108 itens e o
+  // operador precisa saber que é o item de TARIFA, não o serviço que ele já
+  // escolheu em "Tipo de atividade".
+  //
+  // Opcional de propósito (decisão do Fábio, 09/09): sem ela o apontamento
+  // sincroniza igual e o painel mostra a produção em branco. Travar o campo com
+  // o operador no meio do serviço, sem certeza de qual item escolher, prenderia
+  // o dia de trabalho no aparelho.
+  function seletorDescricaoHtml(valor, atributos){
+    return '<div class="fake-select" '+atributos+'><span class="'+(valor?"val":"placeholder")+'">'+
+      esc(valor || "Selecionar descrição")+'</span>'+chevronIcon()+'</div>';
+  }
+
+  // Abre a lista das 108 descrições COM busca -- sem ela, rolar 108 itens em
+  // campo é inviável. O `true` no fim é o que liga o filtro.
+  function abrirSeletorDescricao(valorAtual, aoEscolher){
+    if (!CATALOGO.descricoesAtividade || !CATALOGO.descricoesAtividade.length){
+      showToast("A lista de descrições ainda não foi baixada. Conecte-se uma vez para recebê-la.");
+      return;
+    }
+    openSheet("Descrição (tarifa)", CATALOGO.descricoesAtividade, valorAtual, aoEscolher, true);
+  }
+
   function campoHtml(campo, valor){
     var reqStar = campo.req ? ' <span class="req">*</span>' : '';
     var label = '<label>'+esc(campo.l)+reqStar+'</label>';
@@ -2327,10 +2358,16 @@
         var formulario = formularioDaAtividade(a.tipo_atividade);
         var maquinasPayload = (a.maquinas || []).map(function(m){
           var dados = {};
+          // A descrição vai DENTRO de dados, por máquina, nos dois formulários
+          // em que cada máquina tem produção própria. É o que permite a
+          // escavadeira estar em M³ e o caminhão em HT no mesmo apontamento --
+          // são tarifas diferentes, e a unidade decide a fórmula da produção.
           if (formulario === "hora_maquina"){
-            dados = { hora_inicial: m.hora_inicial, hora_final: m.hora_final };
+            dados = { descricao: m.descricao || null,
+                      hora_inicial: m.hora_inicial, hora_final: m.hora_final };
           } else if (formulario === "maquinas_detalhado"){
             dados = {
+              descricao: m.descricao || null,
               up: m.up, trecho: m.trecho, quantidade: m.quantidade,
               comprimento_m: m.comprimento_m, largura_m: m.largura_m, profundidade_cm: m.profundidade_cm,
               hora_inicial: m.hora_inicial, hora_final: m.hora_final,
@@ -2342,6 +2379,11 @@
         return {
           id: a.id,
           tipo_atividade: a.tipo_atividade,
+          // Descrição do apontamento: vale para o formulário PADRÃO, onde as
+          // medidas são da atividade e há uma produção só. Nos outros dois a
+          // descrição fica na máquina (ver maquinasPayload acima), e o servidor
+          // usa esta como reserva quando a máquina não tem a sua.
+          descricao_atividade: a.descricao_atividade || null,
           up: a.up || null,
           comprimento_m: a.comprimento_m, largura_m: a.largura_m, profundidade_cm: a.profundidade_cm,
           dmt_km_inicial: a.dmt_km_inicial, dmt_km_final: a.dmt_km_final,
@@ -2465,6 +2507,8 @@
             rotulado("Operador",
               '<div class="fake-select" data-maqidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Selecionar")+'</span>'+chevronIcon()+'</div>')+
           '</div>'+
+          rotulado("Descrição (tarifa)",
+            seletorDescricaoHtml(m.descricao, 'data-maqidx="'+idx+'" data-campo="descricao"'))+
           '<div class="row-2">'+
             rotulado("Hora inicial",
               '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="'+phDinamico(r?r.cliente:"",a.tipo_atividade,"hora_inicial","Hora inicial")+'" data-maqidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">')+
@@ -2496,6 +2540,8 @@
             rotulado("Operador",
               '<div class="fake-select" data-mdidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Selecionar")+'</span>'+chevronIcon()+'</div>')+
           '</div>'+
+          rotulado("Descrição (tarifa)",
+            seletorDescricaoHtml(m.descricao, 'data-mdidx="'+idx+'" data-campo="descricao"'))+
           rotulado(phDinamico(clienteAtual,a.tipo_atividade,"up","UP (Talhão)"),
             '<input class="campo-solo campo-texto-solo" type="text" data-mdidx="'+idx+'" data-campo="up" value="'+escAttr(m.up||"")+'">')+
           rotulado(phDinamico(clienteAtual,a.tipo_atividade,"trecho","Trecho"),
@@ -2527,6 +2573,13 @@
       html += renderFotoGridHtml(a);
 
     } else if (a.tipo_atividade){
+      // Formulário padrão de obra: as medidas são do apontamento e há uma
+      // produção só, então a descrição também é uma só -- diferente dos
+      // formulários de máquina, onde cada uma tem a sua.
+      html += '<div class="field"><label>Descrição (tarifa) (opcional)</label>'+
+        seletorDescricaoHtml(a.descricao_atividade, 'id="sel-descricao-ativ"')+
+        '<p class="helper-text">Define o código de tarifa e a unidade de medida.</p></div>';
+
       var upObrigatorioPadrao = reqDinamico(r ? r.cliente : "", a.tipo_atividade, "up");
       html += '<div class="field"><label>UP (Talhão)'+(upObrigatorioPadrao?' <span class="req">*</span>':' (opcional)')+'</label>'+
         '<input type="text" class="campo-texto" data-k="up" value="'+escAttr(a.up||"")+'"></div>';
@@ -2582,6 +2635,15 @@
         else r.atividades[App.editAtividadeIdx] = novo;
         render();
       }, true);   // com busca: são 50+ tipos, rolar a lista inteira em campo é lento
+    };
+
+    // Descrição do formulário padrão de obra. Nos formulários de máquina o
+    // campo é por máquina, e está ligado mais abaixo.
+    var selDescricao = document.getElementById("sel-descricao-ativ");
+    if (selDescricao) selDescricao.onclick = function(){
+      abrirSeletorDescricao(a.descricao_atividade, function(v){
+        a.descricao_atividade = v; render();
+      });
     };
 
     document.querySelectorAll("#main input.campo-numerico[data-k]").forEach(function(input){
@@ -2669,6 +2731,14 @@
         }, true);
       };
     });
+    document.querySelectorAll('.maquina-card .fake-select[data-campo="descricao"]').forEach(function(sel){
+      sel.onclick = function(){
+        var idx = Number(sel.getAttribute("data-maqidx"));
+        abrirSeletorDescricao(a.maquinas[idx].descricao, function(v){
+          a.maquinas[idx].descricao = v; render();
+        });
+      };
+    });
     document.querySelectorAll('.maquina-card input.campo-numerico[data-campo]').forEach(function(input){
       wireCampoNumerico(input, function(n){
         var idx = Number(input.getAttribute("data-maqidx"));
@@ -2704,6 +2774,14 @@
         openSheet("Operador", operadoresDisponiveis(r), a.maquinas[idx].operador, function(v){
           a.maquinas[idx].operador = v; render();
         }, true);
+      };
+    });
+    document.querySelectorAll('.maquina-detalhada-card .fake-select[data-campo="descricao"]').forEach(function(sel){
+      sel.onclick = function(){
+        var idx = Number(sel.getAttribute("data-mdidx"));
+        abrirSeletorDescricao(a.maquinas[idx].descricao, function(v){
+          a.maquinas[idx].descricao = v; render();
+        });
       };
     });
     document.querySelectorAll('.maquina-detalhada-card input.campo-numerico-solo[data-campo]').forEach(function(campo){
