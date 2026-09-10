@@ -846,8 +846,34 @@
   }
   // Qual template de formulário uma atividade usa. "padrao" quando não há
   // regra nenhuma (é o caso das atividades de obra "de sempre").
+  //
+  // A busca tenta o nome EXATO primeiro e, só se não achar, tenta ignorando
+  // caixa e acento. Isso conserta um defeito que estava em produção (achado em
+  // 10/09) e cobre os próximos do mesmo tipo.
+  //
+  // O que acontecia: o painel grava a regra usando o NOME da atividade como
+  // chave, com o nome que ela tinha naquele dia. Quatro regras foram
+  // configuradas em 02/09, quando o cadastro usava grafia mista ("Hora Máquina
+  // Trabalhada"); depois o catálogo foi recadastrado em maiúsculas ("HORA
+  // MAQUINA TRABALHADA") e as regras ficaram apontando para nomes que não
+  // existem mais. Resultado: três atividades caíam no formulário PADRÃO --
+  // quem escolhia Hora Máquina Trabalhada recebia comprimento, largura e
+  // profundidade em vez de máquinas com horas.
+  //
+  // Falhava calada, que é o pior: nenhum erro, só o formulário errado.
+  //
+  // O exato vem primeiro de propósito: se um dia existirem duas atividades que
+  // só diferem por acento, a correspondência exata é que tem de ganhar.
   function formularioDaAtividade(tipo){
-    if (REGRAS.formulario_atividade && REGRAS.formulario_atividade[tipo]) return REGRAS.formulario_atividade[tipo];
+    var mapa = (REGRAS && REGRAS.formulario_atividade) || {};
+    if (mapa[tipo]) return mapa[tipo];
+
+    var alvo = normalizarBusca(tipo || "");
+    if (!alvo) return "padrao";
+    var chaves = Object.keys(mapa);
+    for (var i = 0; i < chaves.length; i++){
+      if (normalizarBusca(chaves[i]) === alvo) return mapa[chaves[i]];
+    }
     return "padrao";
   }
   // Obrigatoriedade de um campo, configurável por cliente E por atividade

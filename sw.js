@@ -5,7 +5,7 @@
 // internet — inclusive na primeira tela, sem precisar já ter sido aberto
 // online antes de ir a campo.
 
-var CACHE_NAME = "gtm-rdo-v41";
+var CACHE_NAME = "gtm-rdo-v42";
 var APP_SHELL = [
   "./",
   "./index.html",

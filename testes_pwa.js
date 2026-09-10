@@ -813,6 +813,50 @@ checar("o campo DMT digitável foi mesmo removido",
   !/k:"dmt_km_inicial"/.test(htmlCompleto) && !/k:"dmt_km_final"/.test(htmlCompleto),
   "o campo antigo voltou: ele nunca aparecia, e agora duplicaria o derivado");
 
+// ---------------------------------------------------------------------------
+// A regra de formulário é achada mesmo se a grafia do nome mudou
+// ---------------------------------------------------------------------------
+// Defeito que estava EM PRODUÇÃO, achado em 10/09 a partir de uma pergunta do
+// Fábio sobre o campo DMT. O painel grava a regra usando o NOME da atividade
+// como chave, com o nome que ela tinha naquele dia. Quatro regras foram feitas
+// em 02/09, quando o cadastro usava grafia mista; depois o catálogo foi
+// recadastrado em maiúsculas e as regras ficaram órfãs.
+//
+// Três atividades caíam no formulário PADRÃO: quem escolhia "Hora Máquina
+// Trabalhada" recebia comprimento/largura/profundidade em vez de máquinas com
+// horas. Sem erro nenhum na tela -- só o formulário errado.
+console.log("\n--- formulário achado apesar da grafia ---\n");
+
+function formularioCom(regras, tipo) {
+  return new Function("REGRAS",
+    corpoDaFuncao("normalizarBusca") + corpoDaFuncao("formularioDaAtividade") +
+    "; return formularioDaAtividade;")({ formulario_atividade: regras })(tipo);
+}
+
+// Os três casos reais que estavam quebrados.
+[["Hora Máquina Trabalhada", "hora_maquina", "HORA MAQUINA TRABALHADA", "caixa + acento"],
+ ["Abertura de Estrada", "maquinas_detalhado", "ABERTURA DE ESTRADA", "só caixa"],
+ ["Patrolamento", "maquinas_detalhado", "PATROLAMENTO", "só caixa"]
+].forEach(function (c) {
+  const regras = {}; regras[c[0]] = c[1];
+  checar("acha a regra de " + JSON.stringify(c[2]) + " (" + c[3] + ")",
+    formularioCom(regras, c[2]) === c[1],
+    "veio " + formularioCom(regras, c[2]) + " -- o operador receberia o formulário errado");
+});
+
+// Sem regra nenhuma continua caindo no padrão, que é o comportamento de sempre
+// para as atividades de obra.
+checar("atividade sem regra continua no padrão",
+  formularioCom({ "OUTRA COISA": "hora_maquina" }, "CONSTRUCAO DE ATERRO") === "padrao",
+  "inventou um formulário para quem não tem regra");
+
+// O EXATO tem que ganhar do aproximado. Se um dia existirem duas atividades que
+// só diferem por acento, cada uma com sua regra, a correspondência exata é a
+// que vale -- senão a ordem das chaves decidiria, o que é aleatório.
+checar("correspondência exata vence a aproximada",
+  formularioCom({ "PATROLAMENTO": "padrao", "Patrolamento": "hora_maquina" }, "PATROLAMENTO") === "padrao",
+  "o aproximado ganhou do exato: aí quem decide é a ordem das chaves");
+
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
 process.exit(erros ? 1 : 0);
