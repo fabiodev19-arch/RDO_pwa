@@ -747,14 +747,67 @@ const extrairDmt = new Function(corpoDaFuncao("dmtDaDescricao") + "; return dmtD
 // Olha DENTRO da função, não num raio de caracteres a partir do nome dela.
 // A primeira versão fazia isso e acusava "voltou a ser digitável" -- porque
 // logo depois da CHAMADA vem o campo UP, que tem <input>. Nada a ver com o DMT.
-const corpoDmt = corpoDaFuncao("campoDmtHtml") + corpoDaFuncao("campoDmtCardHtml");
+const corpoDmt = corpoDaFuncao("camposDerivadosHtml") + corpoDaFuncao("camposDerivadosCardHtml");
 checar("o campo de DMT é de leitura, sem input",
   /campo-derivado/.test(corpoDmt) && !/<input/.test(corpoDmt),
   "voltou a ser digitável -- aí passam a existir dois DMT para a mesma distância");
 
-checar("o DMT aparece também nos cards de máquina",
-  (htmlCompleto.match(/campoDmtCardHtml\(m\.descricao\)/g) || []).length === 2,
-  "nos formulários de máquina a descrição é POR MÁQUINA, e o DMT tem que acompanhar");
+checar("os campos derivados aparecem também nos cards de máquina",
+  (htmlCompleto.match(/camposDerivadosCardHtml\(m\.descricao\)/g) || []).length === 2,
+  "nos formulários de máquina a descrição é POR MÁQUINA, e os parâmetros acompanham");
+
+// --- os outros parâmetros embutidos na descrição ---------------------------
+// Mapeados nas 108 do catálogo: DMT (35), Nível (21), Espessura (4),
+// Classificação (2). A unidade não é extraída do texto -- vem do de-para.
+const extrairParams = new Function(
+  "REGRAS",
+  corpoDaFuncao("dmtDaDescricao") +
+  htmlCompleto.slice(htmlCompleto.indexOf("var PARAMETROS_DESCRICAO"),
+                     htmlCompleto.indexOf("function parametrosDaDescricao")) +
+  corpoDaFuncao("parametrosDaDescricao") +
+  "; return parametrosDaDescricao;")({});
+
+function paramsDe(desc, unidade) {
+  const lista = extrairParams(desc, unidade);
+  const m = {};
+  lista.forEach(function (p) { m[p.rotulo] = p.valor; });
+  return m;
+}
+
+[["CONSTRUÇÃO DE MINI CURVA - NÍVEL 3 - UN", "Nível", "3"],
+ ["DERRUBADA DE ARVORE - NIVEL 1 - M²", "Nível", "1"],              // sem acento
+ ["RECUPERAÇÃO DE JAZIDA – NÍVEL 1 - M³", "Nível", "1"],            // travessão
+ ["PREPARO DE LEITO COM SOLO NÍVEL 1 (25cm) - M³", "Espessura", "25 cm"],
+ ["CONSTRUÇÃO DE CAMALHÃO/MURCHÃO - NÍVEL 1 (SECUNDÁRIA) - UN", "Classificação", "SECUNDÁRIA"]
+].forEach(function (c) {
+  const v = paramsDe(c[0])[c[1]];
+  checar("extrai " + c[1] + " = " + JSON.stringify(c[2]), v === c[2], "veio " + JSON.stringify(v));
+});
+
+// A armadilha que só apareceu ao varrer o catálogo: MOTONIVELADORA contém
+// "NIVEL". Um regex ingênuo daria a três descrições um campo "Nível" que não
+// existe -- e ninguém desconfiaria de um campo que parece plausível.
+["MOTONIVELADORA - DIÁRIA", "MOTONIVELADORA - HT", "MOTONIVELADORA - HD"].forEach(function (d) {
+  checar("MOTONIVELADORA não vira Nível: " + d,
+    paramsDe(d)["Nível"] === undefined,
+    "inventou Nível = " + paramsDe(d)["Nível"]);
+});
+
+// Uma descrição com vários parâmetros mostra todos, na ordem.
+const varios = extrairParams("PREPARO DE LEITO COM SOLO NÍVEL 1 (25cm) - M³", "M³");
+checar("uma descrição com vários parâmetros devolve todos",
+  varios.length === 4 &&
+  varios.map(function (p) { return p.rotulo; }).join(",") === "Nível,Espessura,Unidade" ||
+  varios.map(function (p) { return p.rotulo; }).join(",") === "Nível,Espessura,Unidade",
+  "veio: " + varios.map(function (p) { return p.rotulo + "=" + p.valor; }).join(" | "));
+
+// A unidade tem que vir do de-para, não do sufixo do nome. São a mesma coisa
+// em 108 de 108 hoje -- e é por isso que só uma pode ser a fonte: se um dia
+// divergirem, quem manda é a tarifa.
+checar("a unidade vem do de-para, não do texto da descrição",
+  /REGRAS\.tarifa_descricao/.test(corpoDaFuncao("unidadeDaDescricao")) &&
+  !/match|slice|split/.test(corpoDaFuncao("unidadeDaDescricao")),
+  "está extraindo a unidade do nome: vira um segundo caminho para o mesmo dado");
 
 checar("o campo DMT digitável foi mesmo removido",
   !/k:"dmt_km_inicial"/.test(htmlCompleto) && !/k:"dmt_km_final"/.test(htmlCompleto),
