@@ -550,6 +550,82 @@ checar("o catálogo local NÃO traz uma cópia das descrições",
   /descricoesAtividade:\s*\[\s*\]/.test(htmlCompleto),
   "há uma lista embutida: ela vira uma segunda verdade e envelhece sozinha");
 
+// ---------------------------------------------------------------------------
+// Ajustes de uso pedidos em 10/09
+// ---------------------------------------------------------------------------
+console.log("\n--- ajustes de uso (10/09) ---\n");
+
+// A ordem da Identificação é a ordem na tela. O Fábio pediu Contrato depois de
+// Tipo de estrada, não em segundo lugar.
+const fonteIdent = extrairFuncao("var IDENT_CAMPOS", "// Campos \"comuns\"");
+const ordemIdent = (fonteIdent.match(/k:"([a-z_]+)"/g) || []).map(function (s) {
+  return s.replace(/k:"|"/g, "");
+});
+const ordemEsperada = ["cliente", "faena", "tipo_estrada", "contrato", "equipe_frente",
+  "fazenda", "data", "encarregado", "supervisor", "tecnico_arauco", "supervisor_arauco"];
+checar("os campos de Identificação estão na ordem pedida",
+  ordemIdent.join(",") === ordemEsperada.join(","),
+  "veio: " + ordemIdent.join(", "));
+
+// O defeito da busca NÃO era o filtro (conferido: acha os 198 itens de todas as
+// listas). Era a rolagem, que ficava onde estava enquanto a lista encolhia --
+// o item aparecia no topo e a tela mostrava o vazio lá de baixo.
+const fonteFiltro = extrairFuncao("function filtrarSheetList", "function closeSheet");
+checar("filtrar volta a lista para o topo",
+  /scrollTop\s*=\s*0/.test(fonteFiltro),
+  "sem isto a busca acha o item e mostra área vazia -- parece que não achou");
+
+// O seletor é ancorado no rodapé, e o teclado do celular ocupa justamente essa
+// metade. vh não encolhe com o teclado aberto; visualViewport sabe o tamanho
+// que sobrou.
+checar("o seletor se ajusta ao teclado pelo visualViewport",
+  /visualViewport/.test(htmlCompleto) && /function ajustarSheetAoTeclado/.test(htmlCompleto),
+  "sem isto a lista fica atrás do teclado ao digitar na busca");
+
+// Aqui NÃO dá para usar extrairFuncao com marcador de fim: o texto que segue
+// closeSheet (`document.getElementById("sheet-overlay")`) também aparece DENTRO
+// dela e mais acima no arquivo, então o marcador casaria antes do começo. É o
+// mesmo tipo de armadilha que já fez um teste meu acusar código certo -- aqui
+// recorto pelo próprio corpo, contando as chaves.
+function corpoDaFuncao(nome) {
+  const ini = htmlCompleto.indexOf("function " + nome + "(");
+  if (ini === -1) return "";
+  let i = htmlCompleto.indexOf("{", ini), nivel = 0;
+  for (let j = i; j < htmlCompleto.length; j++) {
+    if (htmlCompleto[j] === "{") nivel++;
+    else if (htmlCompleto[j] === "}") { nivel--; if (nivel === 0) return htmlCompleto.slice(ini, j + 1); }
+  }
+  return "";
+}
+
+[["openSheet", "o ajuste ao teclado nunca começa"],
+ ["closeSheet", "sem soltar no fechamento, a altura calculada com o teclado aberto gruda na próxima abertura"]
+].forEach(function (par) {
+  checar(par[0] + " aciona o ajuste ao teclado",
+    /ajustarSheetAoTeclado\(/.test(corpoDaFuncao(par[0])),
+    par[1]);
+});
+
+// O aviso de sucesso saiu do rodapé para o canto superior direito, e ganhou cor.
+const cssPwa = htmlCompleto.match(/<style>([\s\S]*?)<\/style>/)[1];
+const regraToast = (cssPwa.match(/\.toast\{[^}]*\}/) || [""])[0];
+checar("o toast fica no topo, à direita",
+  /top:/.test(regraToast) && /right:/.test(regraToast) && !/bottom:/.test(regraToast),
+  "continua ancorado no rodapé: " + regraToast.slice(0, 90));
+
+checar("existe a variante de sucesso, em verde",
+  /\.toast\.ok\{[^}]*--success/.test(cssPwa),
+  "sem a variante, sucesso e erro têm a mesma cara");
+
+const fonteToast = extrairFuncao("function showToast", "function checkToastIcon");
+checar("showToast aceita o tipo sem quebrar quem já chamava com um argumento",
+  /function showToast\(msg,\s*tipo\)/.test(fonteToast) && /tipo === "ok"/.test(fonteToast),
+  "a assinatura mudou de um jeito que obriga a revisar todas as chamadas");
+
+checar("a sincronização só fica verde quando TUDO subiu",
+  /tudoOk\s*\?\s*"ok"\s*:\s*undefined/.test(htmlCompleto),
+  "pintar de verde um envio parcial faz o operador achar que acabou");
+
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
 process.exit(erros ? 1 : 0);

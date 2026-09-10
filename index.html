@@ -404,13 +404,25 @@
   .modal-box .actions{display:flex; gap:9px;}
   .modal-box .actions .btn{padding:11px;}
 
+  /* Canto superior DIREITO, não o rodapé (pedido do Fábio, 10/09).
+     No celular o rodapé é onde ficam o polegar e a barra do sistema -- o aviso
+     nascia justamente atrás da mão que acabou de tocar o botão. E, no envio, o
+     operador está olhando o topo da tela, onde o RDO muda de estado.
+     Sem white-space:nowrap: em tela estreita a mensagem quebra em duas linhas
+     em vez de vazar para fora. */
   .toast{
-    position:fixed; left:50%; bottom:calc(20px + var(--safe-bottom)); transform:translateX(-50%);
-    background:var(--surface-3); color:var(--text); padding:11px 18px; border-radius:30px;
-    font-size:13px; font-weight:600; z-index:40; box-shadow:var(--shadow); white-space:nowrap;
-    opacity:0; pointer-events:none; transition:opacity .2s ease;
+    position:fixed; top:calc(12px + var(--safe-top, 0px)); right:12px; left:auto;
+    background:var(--surface-3); color:var(--text); padding:11px 15px;
+    border-radius:var(--radius); font-size:13px; font-weight:600; z-index:40;
+    box-shadow:0 6px 20px rgba(0,0,0,.28); border:1px solid var(--border);
+    opacity:0; pointer-events:none; transition:opacity .2s ease, transform .2s ease;
+    transform:translateY(-8px); max-width:calc(100vw - 24px);
+    display:flex; align-items:center; gap:8px;
   }
-  .toast.show{opacity:1;}
+  .toast.show{opacity:1; transform:translateY(0);}
+  /* Verde com check no sucesso -- mesmo tom do --success usado no resto do app. */
+  .toast.ok{background:var(--success-bg); border-color:var(--success); color:var(--success);}
+  .toast svg{width:16px; height:16px; flex-shrink:0;}
 
   /* ---------- Sucesso / resultado do envio ---------- */
   .sucesso-wrap{display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -834,11 +846,18 @@
     return textoBase + (reqDinamico(cliente, atividade, chaveInterna) ? "" : " (opcional)");
   }
 
+  // A ORDEM aqui é a ordem na tela, e foi definida pelo Fábio em 10/09. Empresa
+  // não entra no array: é fixo ("GTM"), desenhado antes e travado.
+  //
+  // Mudou só o Contrato, que era o segundo campo e passou para depois do Tipo
+  // de estrada. Ele identifica com o que o operador reconhece primeiro --
+  // cliente, o que vai fazer, em que tipo de estrada -- e só então o contrato,
+  // que é o mesmo o dia inteiro e quase nunca muda.
   var IDENT_CAMPOS = [
     { k:"cliente", l:"Cliente", t:"select", opts:CATALOGO.clientes, req:true },
-    { k:"contrato", l:"Contrato", t:"select", opts:CATALOGO.contratos, req:true },
     { k:"faena", l:"Faena (descrição da tarefa)", t:"text", req:true, ph:"Ex: Manutenção de ponto de captação de água" },
     { k:"tipo_estrada", l:"Tipo de estrada", t:"select", opts:CATALOGO.tiposEstrada, req:true },
+    { k:"contrato", l:"Contrato", t:"select", opts:CATALOGO.contratos, req:true },
     { k:"equipe_frente", l:"Equipe / Frente", t:"select", opts:CATALOGO.equipesFrente, req:true },
     { k:"fazenda", l:"Fazenda", t:"select", opts:CATALOGO.fazendas, req:true },
     { k:"data", l:"Data", t:"date", req:true },
@@ -1027,12 +1046,24 @@
 
   /* ======================= UI HELPERS: TOAST / MODAL / SHEET ======================= */
   var toastTimer = null;
-  function showToast(msg){
+  // showToast(msg)       -> aviso neutro (erro, offline, recusa do servidor)
+  // showToast(msg, "ok") -> confirmação de sucesso: verde, com check
+  //
+  // Segundo argumento opcional de propósito: as chamadas que já existiam não
+  // mudam, e só os pontos de sucesso ganham a marca.
+  function showToast(msg, tipo){
     var el = document.getElementById("toast");
-    el.textContent = msg;
+    el.className = "toast" + (tipo === "ok" ? " ok" : "");
+    el.innerHTML = (tipo === "ok" ? checkToastIcon() : "") + "<span>" + esc(msg) + "</span>";
+    // Reflow antes de "show": sem ele, um toast logo após outro não reanima e
+    // o operador não percebe que houve aviso novo.
+    void el.offsetWidth;
     el.classList.add("show");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function(){ el.classList.remove("show"); }, 1800);
+    toastTimer = setTimeout(function(){ el.classList.remove("show"); }, 2400);
+  }
+  function checkToastIcon(){
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
   }
 
   function showModal(html){
@@ -1081,6 +1112,45 @@
     document.getElementById("sheet-overlay").classList.add("show");
     var list = document.getElementById("sheet-list");
     if (list) list.scrollTop = 0;
+    ajustarSheetAoTeclado(true);
+  }
+
+  // O teclado do celular come a metade de baixo da tela, e o seletor é ancorado
+  // justamente no rodapé -- então, ao tocar na busca, a lista ia parar atrás do
+  // teclado e o operador tinha que arrastar a tela para ver o resultado do que
+  // estava digitando (queixa do Fábio, 10/09).
+  //
+  // A altura do sheet era 74vh, e vh NÃO encolhe quando o teclado abre: a
+  // unidade se refere à tela toda, teclado incluído. Quem sabe o tamanho real
+  // sobrando é o visualViewport.
+  //
+  // Sem visualViewport (navegador antigo), nada muda -- o 74vh do CSS continua
+  // valendo, que é o comportamento de hoje.
+  var _vvLigado = false;
+  function ajustarSheetAoTeclado(ligar){
+    var vv = window.visualViewport;
+    var sheet = document.querySelector(".sheet");
+    if (!vv || !sheet) return;
+
+    function aplicar(){
+      var overlay = document.getElementById("sheet-overlay");
+      if (!overlay || !overlay.classList.contains("show")) return;
+      // 12px de folga para o sheet não encostar na borda do teclado.
+      sheet.style.maxHeight = Math.max(220, vv.height - 12) + "px";
+    }
+
+    if (ligar){
+      aplicar();
+      if (!_vvLigado){
+        vv.addEventListener("resize", aplicar);
+        vv.addEventListener("scroll", aplicar);
+        _vvLigado = true;
+      }
+    } else {
+      // Fechou: devolve o controle ao CSS, senão a altura calculada com o
+      // teclado aberto ficaria grudada na próxima abertura.
+      sheet.style.maxHeight = "";
+    }
   }
   function renderSheetList(opcoes, valorAtual){
     var list = document.getElementById("sheet-list");
@@ -1128,6 +1198,18 @@
       btn.classList.toggle("hidden", !bate);
       if (bate) visiveis++;
     });
+
+    // Volta ao topo a CADA filtragem.
+    //
+    // Sem isto a busca parecia não achar o que achou, e foi assim que o Fábio
+    // esbarrou no problema (10/09): ele rolava até o fim da lista para ver o
+    // último item, digitava aquele texto, e a tela mostrava um vazio. O item
+    // estava lá -- conferido, o filtro acha os 198 itens de todas as listas --
+    // mas ficava desenhado no topo enquanto a rolagem continuava lá embaixo,
+    // onde agora não há mais nada.
+    //
+    // openSheet já zerava a rolagem AO ABRIR; faltava zerar a cada tecla.
+    list.scrollTop = 0;
     var vazio = list.querySelector(".sheet-empty");
     if (visiveis === 0 && !vazio){
       vazio = document.createElement("div");
@@ -1138,7 +1220,10 @@
       vazio.remove();
     }
   }
-  function closeSheet(){ document.getElementById("sheet-overlay").classList.remove("show"); }
+  function closeSheet(){
+    document.getElementById("sheet-overlay").classList.remove("show");
+    ajustarSheetAoTeclado(false);
+  }
   document.getElementById("sheet-overlay").addEventListener("click", function(e){
     if (e.target.id === "sheet-overlay") closeSheet();
   });
@@ -1619,7 +1704,11 @@
       }
       showToast("Sincronizando...");
       tentarSincronizarTodosPendentes().then(function(resultados){
-        showToast(resultados.every(Boolean) ? "Sincronização concluída." : "Alguns relatórios ainda não sincronizaram.");
+        // Verde só quando TUDO subiu. "Alguns não sincronizaram" é aviso, não
+        // sucesso -- pintar de verde faria o operador achar que acabou.
+        var tudoOk = resultados.every(Boolean);
+        showToast(tudoOk ? "Sincronização concluída." : "Alguns relatórios ainda não sincronizaram.",
+                  tudoOk ? "ok" : undefined);
       });
     };
     document.getElementById("btn-novo").onclick = function(){

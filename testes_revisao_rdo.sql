@@ -752,6 +752,76 @@ EXCEPTION WHEN OTHERS THEN
   PERFORM pg_temp.checar('C', 'produção consolidada por máquina', false, SQLERRM);
 END $secao_c_prod$;
 
+-- ============================================================================
+-- SEÇÃO C (continuação) — validar não é repetível
+-- ============================================================================
+-- Notado pelo Fábio em 10/09: dava para validar o mesmo apontamento quantas
+-- vezes quisesse. O status não corrompia (seguia 'validado'), mas cada clique
+-- regravava revisado_por e revisado_em -- apagando quem validou primeiro e
+-- quando, que é a informação que essas colunas existem para guardar.
+DO $secao_c_val$
+DECLARE
+  v_uid  uuid;
+  v_rel  uuid := gen_random_uuid();
+  v_aid  uuid;
+  v_rev1 timestamptz;
+  v_rev2 timestamptz;
+  v_st   text;
+BEGIN
+  SELECT id INTO v_uid FROM auth.users ORDER BY created_at LIMIT 1;
+  IF v_uid IS NULL THEN
+    PERFORM pg_temp.pular('C', 'validar não é repetível', 'auth.users vazia');
+    RETURN;
+  END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+  PERFORM sincronizar_relatorio_rdo(jsonb_build_object('uuid_dispositivo', v_rel,
+    'cliente','Colheita','contrato','ARAUCO','faena','TESTE TRAVA VALIDACAO','tipo_estrada','Acesso',
+    'equipe_frente','GTM','fazenda','Elo Dourado 2','data','2026-09-10','encarregado','Elson',
+    'supervisor','Valmir','tecnico_arauco','Edwilson','supervisor_arauco','Luciano','concluidoEm', now(),
+    'atividades', jsonb_build_array(jsonb_build_object('id', gen_random_uuid(),
+      'tipo_atividade','Construção de Aterro','comprimento_m',10,'largura_m',4))));
+  SELECT a.id INTO v_aid
+    FROM atividades a JOIN relatorios r ON r.id = a.relatorio_id
+   WHERE r.uuid_dispositivo = v_rel;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+
+  PERFORM validar_atividade_rdo(v_aid);
+  SELECT revisado_em INTO v_rev1 FROM atividades WHERE id = v_aid;
+  PERFORM pg_temp.checar('C', 'a primeira validação passa', v_rev1 IS NOT NULL);
+
+  BEGIN
+    PERFORM validar_atividade_rdo(v_aid);
+    PERFORM pg_temp.checar('C', 'validar DUAS VEZES é recusado', false, 'a segunda passou');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'validar DUAS VEZES é recusado', SQLERRM ILIKE '%já foi validado%', SQLERRM);
+  END;
+
+  -- O que a trava protege de verdade: o carimbo de quem validou primeiro.
+  SELECT revisado_em, status_revisao INTO v_rev2, v_st FROM atividades WHERE id = v_aid;
+  PERFORM pg_temp.checar('C', 'a recusa preserva o carimbo da primeira revisão',
+    v_rev1 = v_rev2,
+    'revisado_em foi regravado -- perdeu-se quem validou primeiro e quando');
+  PERFORM pg_temp.checar('C', 'e o status continua validado depois da recusa',
+    v_st = 'validado', 'status = ' || coalesce(v_st,'NULL'));
+
+  -- O caminho legítimo de revalidar continua aberto: devolver reabre o ciclo.
+  PERFORM devolver_atividade_rdo(v_aid, 'Revisando de novo');
+  BEGIN
+    PERFORM validar_atividade_rdo(v_aid);
+    PERFORM pg_temp.checar('C', 'depois de devolver, validar volta a ser permitido', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'depois de devolver, validar volta a ser permitido', false, SQLERRM);
+  END;
+
+  PERFORM set_config('request.jwt.claims', '', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.checar('C', 'validar não é repetível', false, SQLERRM);
+END $secao_c_val$;
+
 -- A quantidade ganha de tudo: é o primeiro ramo da fórmula do Excel, e o que
 -- mais aparece em campo. Testado direto na função para não depender de uma
 -- sincronização inteira.
