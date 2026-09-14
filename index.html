@@ -893,12 +893,30 @@
   // e só quem precisar de exceção por atividade configura a específica.
   // Sem regra nenhuma -> obrigatório por padrão (mais seguro exigir de
   // mais do que deixar passar um campo importante em branco).
+  //
+  // ...com uma exceção, e ela vale para todo campo novo daqui em diante: um
+  // campo recém-criado NÃO tem regra nenhuma no banco, então esse padrão o
+  // faria nascer OBRIGATÓRIO -- e todo apontamento em campo passaria a travar
+  // num campo que ninguém sabe ainda para que serve. É a mesma armadilha do
+  // NOT NULL do arquivo 1, que derrubou a sincronização de quem estava na
+  // estrada. Campo novo entra em PADRAO_OBRIGATORIEDADE como false, e o
+  // painel liga depois, se e quando a regra existir. O Fábio decide na tela
+  // de Configurações; o código não decide por ele.
+  var PADRAO_OBRIGATORIEDADE = {
+    // 10/09: veio dos apontamentos que chegam por WhatsApp, ainda sem
+    // finalidade definida no cálculo. Exigir seria travar por um campo que
+    // nem o painel usa hoje.
+    "Dimensão": false
+  };
   function campoObrigatorioPara(cliente, atividade, campo){
     var mapa = REGRAS.campo_obrigatorio || {};
     var chaveEspecifica = cliente + ":" + atividade + ":" + campo;
     if (Object.prototype.hasOwnProperty.call(mapa, chaveEspecifica)) return !!mapa[chaveEspecifica];
     var chaveGeral = cliente + ":" + campo;
     if (Object.prototype.hasOwnProperty.call(mapa, chaveGeral)) return !!mapa[chaveGeral];
+    // Só aqui, sem regra nenhuma, o padrão do campo decide. Marcar a flag no
+    // painel grava a regra e passa a mandar -- nos dois sentidos.
+    if (Object.prototype.hasOwnProperty.call(PADRAO_OBRIGATORIEDADE, campo)) return !!PADRAO_OBRIGATORIEDADE[campo];
     return true;
   }
   // Nome "de negócio" de cada campo interno -- é esse nome que aparece na
@@ -907,7 +925,8 @@
     up: "UP", trecho: "Trecho", comprimento_m: "Comprimento", largura_m: "Largura",
     profundidade_cm: "Profundidade", dmt_km_inicial: "DMT", dmt_km_final: "DMT",
     observacao: "Observação", tipo: "Tipo", quantidade: "Quantidade",
-    hora_inicial: "Hora Inicial", hora_final: "Hora Final"
+    hora_inicial: "Hora Inicial", hora_final: "Hora Final",
+    dimensao_m: "Dimensão"
   };
   // Campos sem entrada no mapa (equipamento, operador, tipo_atividade...)
   // ficam sempre obrigatórios, fixos -- sem opção de tornar opcional.
@@ -933,7 +952,17 @@
     { k:"tipo_estrada", l:"Tipo de estrada", t:"select", opts:CATALOGO.tiposEstrada, req:true },
     { k:"contrato", l:"Contrato", t:"select", opts:CATALOGO.contratos, req:true },
     { k:"equipe_frente", l:"Equipe / Frente", t:"select", opts:CATALOGO.equipesFrente, req:true },
-    { k:"fazenda", l:"Fazenda", t:"select", opts:CATALOGO.fazendas, req:true },
+    // Texto livre, não lista (14/09) -- mesmo motivo do Trecho: o cadastro tem
+    // duas fazendas de exemplo, e a Arauco tem muito mais. Uma lista curta
+    // demais obriga o encarregado a escolher uma fazenda que não é a dele.
+    //
+    // Consequência conhecida, e aceita: wireCampoTexto normaliza para maiúscula
+    // sem acento, então o que for digitado agora vira "ELO DOURADO 2", enquanto
+    // os relatórios antigos guardam "Elo Dourado 2", como o select gravava. O
+    // filtro de fazenda do painel monta a lista a partir dos relatórios que
+    // chegaram, então por um tempo as duas grafias aparecem lado a lado. É o
+    // mesmo comportamento que a Faena sempre teve.
+    { k:"fazenda", l:"Fazenda", t:"text", req:true, ph:"Ex: ELO DOURADO 2" },
     { k:"data", l:"Data", t:"date", req:true },
     { k:"encarregado", l:"Encarregado", t:"select", opts:CATALOGO.encarregados, req:true },
     { k:"supervisor", l:"Supervisor", t:"select", opts:CATALOGO.supervisores, req:true },
@@ -964,6 +993,11 @@
     }
 
     var campos = [
+      // Dimensão vem PRIMEIRO porque o UP é desenhado antes desta lista, e o
+      // Fábio pediu o campo logo abaixo dele (10/09). Não está na planilha da
+      // Arauco -- veio dos apontamentos que chegam por WhatsApp, e por ora é
+      // só registro: nenhuma fórmula de produção usa este número.
+      { k:"dimensao_m", l:"Dimensão (m)", t:"number", req:reqDinamico(cliente,tipo,"dimensao_m") },
       { k:"comprimento_m", l:"Comprimento (m)", t:"number", req:reqDinamico(cliente,tipo,"comprimento_m") },
       { k:"largura_m", l:"Largura (m)", t:"number", req:reqDinamico(cliente,tipo,"largura_m") },
       { k:"profundidade_cm", l:"Profundidade (cm)", t:"number", req:reqDinamico(cliente,tipo,"profundidade_cm") }
@@ -2708,6 +2742,7 @@
           // usa esta como reserva quando a máquina não tem a sua.
           descricao_atividade: a.descricao_atividade || null,
           up: a.up || null,
+          dimensao_m: a.dimensao_m,
           comprimento_m: a.comprimento_m, largura_m: a.largura_m, profundidade_cm: a.profundidade_cm,
           dmt_km_inicial: a.dmt_km_inicial, dmt_km_final: a.dmt_km_final,
           trecho: a.trecho, tipo: a.tipo, observacao: a.observacao,

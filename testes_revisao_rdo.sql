@@ -108,6 +108,7 @@ BEGIN
     'atividades.excluido_em',
     'atividades.excluido_por',
     'atividades.descricao_atividade',
+    'atividades.dimensao_m',
     'relatorios.criado_por'
   ]
   LOOP
@@ -123,6 +124,20 @@ END $secao_a$;
 
 SELECT pg_temp.checar('A', 'tabela push_subscriptions existe',
   to_regclass('public.push_subscriptions') IS NOT NULL);
+
+-- Dimensão (m), 10/09. Estes dois testes existem por causa do arquivo 1: um
+-- NOT NULL numa coluna que o caminho de escrita vigente não preenchia derrubou
+-- a sincronização de quem estava em campo. Coluna nova entra NULLABLE, e o
+-- teste é o que impede alguém de "endurecer" isso depois sem pensar --
+-- inclusive porque o campo é opcional na tela por decisão do Fábio.
+SELECT pg_temp.checar('A', 'atividades.dimensao_m é numérica',
+  (SELECT data_type FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='atividades' AND column_name='dimensao_m') = 'numeric');
+
+SELECT pg_temp.checar('A', 'atividades.dimensao_m aceita nulo',
+  (SELECT is_nullable FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='atividades' AND column_name='dimensao_m') = 'YES',
+  'virou NOT NULL: todo apontamento sem dimensão passaria a falhar na sincronização');
 
 -- Catálogo de descrições e o de-para de tarifa (descricao_atividade_e_tarifas.sql).
 -- A contagem não é fixada em 108 de propósito: o catálogo cresce quando a
@@ -753,6 +768,84 @@ EXCEPTION WHEN OTHERS THEN
 END $secao_c_prod$;
 
 -- ============================================================================
+-- SEÇÃO C (continuação) — Dimensão (m) faz o caminho inteiro
+-- ============================================================================
+-- Campo novo de 10/09, do formulário Padrão (obra). Não veio da planilha da
+-- Arauco: veio dos apontamentos que chegam por WhatsApp.
+--
+-- O que este teste protege é o caminho todo, não a coluna: o número sai do
+-- aparelho, é gravado, e volta ao painel. Um campo que o PWA envia e a RPC
+-- ignora em silêncio é a pior falha possível aqui -- o operador digita, vê o
+-- check verde, e o dado nunca existiu. Não dá erro em lugar nenhum.
+DO $secao_c_dim$
+DECLARE
+  v_uid       uuid;
+  v_rel_uuid  uuid := gen_random_uuid();
+  v_ativ_uuid uuid := gen_random_uuid();
+  v_ativ      jsonb;
+  v_prod      jsonb;
+BEGIN
+  SELECT id INTO v_uid FROM auth.users ORDER BY created_at LIMIT 1;
+  IF v_uid IS NULL THEN
+    PERFORM pg_temp.pular('C', 'dimensão faz o caminho inteiro', 'auth.users vazia');
+    RETURN;
+  END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+
+  PERFORM sincronizar_relatorio_rdo(jsonb_build_object(
+    'uuid_dispositivo', v_rel_uuid,
+    'cliente', 'Colheita', 'contrato', 'ARAUCO', 'faena', 'TESTE DIMENSAO',
+    'tipo_estrada', 'Acesso', 'equipe_frente', 'GTM', 'fazenda', 'Elo Dourado 2',
+    'data', '2026-09-10', 'encarregado', 'Elson', 'supervisor', 'Valmir',
+    'tecnico_arauco', 'Edwilson', 'supervisor_arauco', 'Luciano', 'concluidoEm', now(),
+    'atividades', jsonb_build_array(jsonb_build_object(
+      'id', v_ativ_uuid,
+      'tipo_atividade', 'Patrolamento',
+      'descricao_atividade', 'CONSTRUÇÃO DE ATERRO - M³',
+      'up', 'UP-4471',
+      'dimensao_m', 8.5,
+      'comprimento_m', 20, 'largura_m', 10
+    ))
+  ));
+
+  PERFORM pg_temp.checar('C', 'a dimensão enviada pelo PWA é gravada na atividade',
+    (SELECT dimensao_m FROM atividades WHERE uuid_atividade_dispositivo = v_ativ_uuid) = 8.5,
+    'gravado: ' || coalesce((SELECT dimensao_m::text FROM atividades
+                              WHERE uuid_atividade_dispositivo = v_ativ_uuid), 'NULL'));
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+
+  SELECT ativ INTO v_ativ
+    FROM jsonb_array_elements(listar_relatorios_painel(NULL, NULL, NULL, NULL, 200)) rel,
+         jsonb_array_elements(rel->'atividades') ativ
+   WHERE ativ->>'id' = (SELECT id::text FROM atividades WHERE uuid_atividade_dispositivo = v_ativ_uuid);
+
+  PERFORM pg_temp.checar('C', 'o painel recebe a dimensão do apontamento',
+    (v_ativ->>'dimensao_m')::numeric = 8.5,
+    'veio ' || coalesce(v_ativ->>'dimensao_m', 'NULL'));
+
+  SELECT p INTO v_prod FROM jsonb_array_elements(coalesce(v_ativ->'producoes','[]'::jsonb)) p LIMIT 1;
+
+  PERFORM pg_temp.checar('C', 'a dimensão também vem na linha de produção do padrão de obra',
+    (v_prod->>'dimensao_m')::numeric = 8.5,
+    'veio ' || coalesce(v_prod->>'dimensao_m', 'NULL'));
+
+  -- A trava que impede a dimensão de mudar o faturamento sem ninguém decidir.
+  -- Comprimento 20 x largura 10 = 200, e a dimensão (8.5) não entra na conta.
+  -- No dia em que a finalidade dela for decidida, é AQUI que o teste acusa.
+  PERFORM pg_temp.checar('C', 'a dimensão NÃO entra na produção consolidada (ainda é só registro)',
+    (v_prod->>'producao')::numeric = 200,
+    'produção veio ' || coalesce(v_prod->>'producao','NULL') || ', esperado 200 (comprimento x largura)');
+
+  PERFORM set_config('request.jwt.claims', '', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.checar('C', 'dimensão faz o caminho inteiro', false, SQLERRM);
+END $secao_c_dim$;
+
+-- ============================================================================
 -- SEÇÃO C (continuação) — validar não é repetível
 -- ============================================================================
 -- Notado pelo Fábio em 10/09: dava para validar o mesmo apontamento quantas
@@ -1027,6 +1120,63 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   PERFORM pg_temp.checar('D','regressão do caminho normal de sincronização', false, SQLERRM);
 END $secao_d4$;
+
+-- ----------------------------------------------------------------------------
+-- D5 — o campo novo não pode ter quebrado quem não o manda
+-- ----------------------------------------------------------------------------
+-- Esta é a seção D fazendo o trabalho dela: não olha para a Dimensão, olha
+-- para o que já estava de pé e podia ter caído junto.
+--
+-- O PWA que está NO BOLSO dos operadores hoje não conhece `dimensao_m` e nunca
+-- vai mandá-la -- ele só ganha o campo quando alguém abrir o app depois do
+-- deploy, e em campo isso pode demorar. Se a coluna nova tivesse ficado NOT
+-- NULL, ou se a RPC passasse a exigir a chave no payload, o RDO do dia ficaria
+-- preso no aparelho. Foi exatamente o que aconteceu com o arquivo 1.
+DO $secao_d5$
+DECLARE
+  v_uid       uuid;
+  v_rel_uuid  uuid := gen_random_uuid();
+  v_ativ_uuid uuid := gen_random_uuid();
+  v_dim       numeric;
+  v_ativs     int;
+BEGIN
+  SELECT id INTO v_uid FROM auth.users ORDER BY created_at LIMIT 1;
+  IF v_uid IS NULL THEN
+    PERFORM pg_temp.pular('D', 'sincronização sem o campo dimensão', 'auth.users vazia');
+    RETURN;
+  END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+
+  -- Payload EXATAMENTE como o app publicado monta: sem a chave dimensao_m.
+  PERFORM sincronizar_relatorio_rdo(jsonb_build_object(
+    'uuid_dispositivo', v_rel_uuid,
+    'cliente', 'Colheita', 'contrato', 'ARAUCO', 'faena', 'TESTE SEM DIMENSAO',
+    'tipo_estrada', 'Acesso', 'equipe_frente', 'GTM', 'fazenda', 'Elo Dourado 2',
+    'data', '2026-09-10', 'encarregado', 'Elson', 'supervisor', 'Valmir',
+    'tecnico_arauco', 'Edwilson', 'supervisor_arauco', 'Luciano', 'concluidoEm', now(),
+    'atividades', jsonb_build_array(jsonb_build_object(
+      'id', v_ativ_uuid,
+      'tipo_atividade', 'Patrolamento',
+      'up', 'UP-4471',
+      'comprimento_m', 20, 'largura_m', 10
+    ))
+  ));
+
+  SELECT count(*) INTO v_ativs FROM atividades WHERE uuid_atividade_dispositivo = v_ativ_uuid;
+  PERFORM pg_temp.checar('D', 'app sem o campo novo continua sincronizando',
+    v_ativs = 1, 'atividades gravadas = ' || v_ativs);
+
+  SELECT dimensao_m INTO v_dim FROM atividades WHERE uuid_atividade_dispositivo = v_ativ_uuid;
+  PERFORM pg_temp.checar('D', 'dimensão ausente vira NULL, não zero',
+    v_dim IS NULL,
+    'veio ' || coalesce(v_dim::text,'NULL') || ' -- zero seria uma medida inventada, e o painel a exibiria como se fosse real');
+
+  PERFORM set_config('request.jwt.claims','',true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.checar('D','sincronização sem o campo dimensão', false, SQLERRM);
+END $secao_d5$;
 
 -- ============================================================================
 -- RESULTADO

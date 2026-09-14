@@ -933,6 +933,171 @@ checar("campoHtml desenha input.campo-texto para t:\"text\"",
   /campo\.t === "text"[\s\S]{0,240}?class="campo-texto"/.test(corpoDaFuncao("campoHtml")),
   "o ramo de texto não produz a classe que o wireCampoTexto procura");
 
+// ---------------------------------------------------------------------------
+// Dimensão (m): campo novo que NÃO pode nascer obrigatório
+// ---------------------------------------------------------------------------
+// Este sistema torna obrigatório todo campo sem regra gravada. Um campo novo
+// não tem regra -- então nasceria exigido em todo apontamento, e travaria o
+// envio de quem está na estrada por causa de algo que ninguém decidiu ainda
+// para que serve. É a mesma armadilha do NOT NULL do arquivo 1.
+console.log("\n--- Dimensão (m) ---\n");
+
+// Recorta `var NOME = {...};` contando chaves -- pelo mesmo motivo de
+// corpoDaFuncao: marcador de fim casa no lugar errado.
+// Serve para objeto ({...}) e para lista ([...]): IDENT_CAMPOS é um array, e a
+// primeira versão só reconhecia objeto -- devolvia "" e o teste estourava com
+// "IDENT_CAMPOS is not defined", que não diz nada sobre a causa.
+function blocoVar(nome) {
+  const ini = htmlCompleto.indexOf("var " + nome + " = ");
+  if (ini === -1) return "";
+  const abre = htmlCompleto[htmlCompleto.indexOf("=", ini) + 2] === "[" ? "[" : "{";
+  const fecha = abre === "[" ? "]" : "}";
+  let i = htmlCompleto.indexOf(abre, ini), nivel = 0;
+  for (let j = i; j < htmlCompleto.length; j++) {
+    if (htmlCompleto[j] === abre) nivel++;
+    else if (htmlCompleto[j] === fecha) { nivel--; if (nivel === 0) return htmlCompleto.slice(ini, j + 1) + ";"; }
+  }
+  return "";
+}
+
+// Harness com as funções REAIS de obrigatoriedade, e REGRAS trocável -- é a
+// interação entre elas que importa, não o texto de cada uma.
+const obrigatoriedade = new Function(
+  "var REGRAS = {};" +
+  blocoVar("PADRAO_OBRIGATORIEDADE") +
+  corpoDaFuncao("campoObrigatorioPara") +
+  blocoVar("NOME_REGRA_CAMPO") +
+  corpoDaFuncao("reqDinamico") +
+  "; return function(regras, cliente, atividade, campo){ REGRAS = regras; return reqDinamico(cliente, atividade, campo); };"
+);
+const req = obrigatoriedade();
+
+checar("sem regra nenhuma, Dimensão nasce OPCIONAL",
+  req({}, "ARAUCO", "PATROLAMENTO", "dimensao_m") === false,
+  "nasceu obrigatória -- todo apontamento em campo travaria nela");
+
+// O padrão dos outros campos não pode ter mudado junto.
+checar("os campos antigos seguem obrigatórios por padrão",
+  req({}, "ARAUCO", "PATROLAMENTO", "comprimento_m") === true &&
+  req({}, "ARAUCO", "PATROLAMENTO", "up") === true,
+  "o padrão geral virou opcional -- isso afrouxa o app inteiro");
+
+// A flag do painel manda, e manda nos DOIS sentidos: é o pedido do Fábio
+// ("o campo deve receber configuração com a flag nos campos obrigatórios por
+// cliente"). Padrão só decide quando não há regra.
+checar("marcar a flag por cliente torna Dimensão obrigatória",
+  req({ campo_obrigatorio: { "ARAUCO:Dimensão": true } }, "ARAUCO", "PATROLAMENTO", "dimensao_m") === true,
+  "a regra do painel foi ignorada -- a flag não serviria para nada");
+
+checar("a regra por atividade vence a regra geral do cliente",
+  req({ campo_obrigatorio: { "ARAUCO:Dimensão": true, "ARAUCO:PATROLAMENTO:Dimensão": false } },
+      "ARAUCO", "PATROLAMENTO", "dimensao_m") === false,
+  "a específica não venceu a geral");
+
+checar("desmarcar a flag em outro cliente não afeta este",
+  req({ campo_obrigatorio: { "SUZANO:Dimensão": true } }, "ARAUCO", "PATROLAMENTO", "dimensao_m") === false,
+  "regra de um cliente vazou para outro");
+
+// O campo em si, no formulário padrão, na posição pedida.
+const camposPadrao = montarCampos(false);
+const iDim = camposPadrao.map(function (c) { return c.k; }).indexOf("dimensao_m");
+
+checar("Dimensão existe no formulário Padrão (obra)",
+  iDim !== -1, "o campo não aparece em camposAtividade");
+
+// O UP é desenhado ANTES desta lista, então "primeiro da lista" é o mesmo que
+// "logo abaixo do UP" na tela -- que foi o pedido.
+checar("Dimensão vem logo depois do UP (é o primeiro da lista)",
+  iDim === 0,
+  "está na posição " + iDim + ", depois de " + camposPadrao.slice(0, iDim).map(function (c) { return c.l; }).join(", "));
+
+// "Primeiro da lista" só significa "logo abaixo do UP" enquanto o UP for
+// desenhado ANTES da lista. Esse elo mora em renderTelaAtividade, não em
+// camposAtividade -- e sem checá-lo os testes acima aprovariam um campo que
+// aparece no lugar errado na tela.
+const corpoRender = corpoDaFuncao("renderTelaAtividade");
+const posUp = corpoRender.indexOf('data-k="up"');
+const posLista = corpoRender.indexOf("campos.forEach");
+checar("o UP é desenhado antes da lista de campos",
+  posUp !== -1 && posLista !== -1 && posUp < posLista,
+  "UP em " + posUp + ", lista em " + posLista + " -- a ordem na tela não é a da lista");
+
+checar("Dimensão é numérica, com o rótulo em metros",
+  iDim !== -1 && camposPadrao[iDim].t === "number" && /\(m\)/.test(camposPadrao[iDim].l),
+  "veio como t=" + (camposPadrao[iDim] || {}).t + ", rótulo " + (camposPadrao[iDim] || {}).l);
+
+// Sem isto o operador digita, o app guarda no aparelho, e o número nunca sai
+// de lá -- a pior das três situações, porque parece que funcionou.
+checar("a dimensão vai no payload da sincronização",
+  /dimensao_m:\s*a\.dimensao_m/.test(htmlCompleto),
+  "o campo não é enviado ao servidor");
+
+// Os dois lados precisam concordar sobre o padrão, senão o painel mostra
+// marcado e o aparelho trata como opcional.
+const htmlPainel = fs.readFileSync(
+  path.join(__dirname, "..", "..", "..", "Painel", "index.html"), "utf8");
+
+checar("o Painel oferece a flag de Dimensão por cliente",
+  /CAMPOS_CONFIGURAVEIS\s*=\s*\[[^\]]*"Dimensão"/.test(htmlPainel) &&
+  /padrao:\s*\[[^\]]*"Dimensão"/.test(htmlPainel),
+  "o campo não aparece na matriz de Configurações");
+
+checar("o Painel usa o MESMO padrão do PWA (desmarcada)",
+  /PADRAO_OBRIGATORIEDADE\s*=\s*\{[^}]*"Dimensão":\s*false/.test(htmlPainel),
+  "os dois lados discordam do padrão -- tela e aparelho vão divergir");
+
+// Procurar só por "a.dimensao_m" não serve: desligando a condição que decide
+// se o bloco aparece, a string continua no arquivo e o teste passava com o
+// campo invisível na tela. Descoberto sabotando -- é para isso que a sabotagem
+// existe. O que amarra de verdade é o rótulo colado ao valor.
+checar("o Painel mostra a dimensão no detalhe do apontamento",
+  /a\.dimensao_m\s*!=\s*null\s*\?[\s\S]{0,160}?<label>Dimensão<\/label>[\s\S]{0,120}?a\.dimensao_m/.test(htmlPainel),
+  "o número chegaria ao banco e ninguém o veria");
+
+// ---------------------------------------------------------------------------
+// Fazenda também é texto livre
+// ---------------------------------------------------------------------------
+// Mesmo motivo do Trecho: o cadastro tem duas fazendas de exemplo e a Arauco
+// tem muito mais. Lista curta demais obriga o encarregado a escolher a fazenda
+// errada -- e fazenda errada contamina o relatório inteiro, não um campo só.
+console.log("\n--- Fazenda como texto livre ---\n");
+
+const identCampos = new Function(
+  "var CATALOGO = { clientes:[], tiposEstrada:[], contratos:[], equipesFrente:[], fazendas:['ELO DOURADO 2'], encarregados:[], supervisores:[], tecnicosArauco:[], supervisoresArauco:[] };" +
+  blocoVar("IDENT_CAMPOS") + "; return IDENT_CAMPOS;"
+)();
+const campoFazenda = identCampos.filter(function (c) { return c.k === "fazenda"; })[0];
+
+checar("Fazenda continua na Identificação",
+  !!campoFazenda, "o campo sumiu de IDENT_CAMPOS");
+
+checar("Fazenda é campo de digitar, não lista",
+  campoFazenda && campoFazenda.t === "text",
+  "veio como " + (campoFazenda && campoFazenda.t));
+
+checar("Fazenda não carrega mais a lista de opções",
+  campoFazenda && !campoFazenda.opts,
+  "ainda tem opts -- o seletor voltaria a abrir");
+
+// Fazenda é o que identifica o RDO na lista e no painel. Continua obrigatória:
+// virar texto livre muda COMO se preenche, não SE é preciso preencher.
+checar("Fazenda segue obrigatória",
+  campoFazenda && campoFazenda.req === true,
+  "deixou de ser obrigatória -- daria para enviar RDO sem fazenda");
+
+// O fio que salva o que foi digitado na Identificação procura esta classe.
+// Sem ele o encarregado digita a fazenda e o RDO é enviado sem ela.
+checar("a Identificação fia os campos de texto",
+  /#main input\.campo-texto\[data-k\]/.test(corpoDaFuncao("ligarEventosSecao")),
+  "ligarEventosSecao não liga input.campo-texto -- o que for digitado não é guardado");
+
+// Os dois campos que o Fábio pediu como texto livre, juntos: se alguém
+// reverter um deles, esta linha acusa sem depender dos blocos acima.
+const trechoPadrao = montarCampos(false).filter(function (c) { return c.k === "trecho"; })[0];
+checar("Trecho e Fazenda são os dois texto livre",
+  trechoPadrao && trechoPadrao.t === "text" && campoFazenda && campoFazenda.t === "text",
+  "trecho=" + (trechoPadrao && trechoPadrao.t) + ", fazenda=" + (campoFazenda && campoFazenda.t));
+
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
 process.exit(erros ? 1 : 0);
