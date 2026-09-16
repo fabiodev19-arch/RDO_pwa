@@ -160,6 +160,22 @@ SELECT pg_temp.checar('A', 'toda descrição do catálogo tem código e unidade 
   ),
   'existe descrição no catálogo sem tarifa: o painel não conseguiria calcular a produção dela');
 
+-- valor_unitario entrou em 17/09 (carga de valor_unitario_tarifas_17_09.sql),
+-- pedido do Fábio para compor um relatório de faturamento que ainda não foi
+-- construído. Mesmo espírito do teste acima: se alguma descrição ficar sem
+-- valor, esse relatório futuro nasceria com um furo silencioso -- exatamente
+-- o tipo de coisa que só aparece quando alguém for cobrar e faltar dado.
+SELECT pg_temp.checar('A', 'toda tarifa tem valor_unitario numérico e positivo',
+  NOT EXISTS (
+    SELECT 1 FROM regras_negocio r
+    WHERE r.tipo_regra = 'tarifa_descricao' AND r.ativo
+      AND (
+        r.valor->>'valor_unitario' IS NULL
+        OR (r.valor->>'valor_unitario')::numeric <= 0
+      )
+  ),
+  'existe tarifa sem valor_unitario, ou com valor zero/negativo');
+
 -- A unidade é o que decide a fórmula da produção consolidada, então uma
 -- unidade escrita fora do combinado (minúscula, com espaço) viraria uma
 -- atividade que nunca casa com nenhuma regra de cálculo.
