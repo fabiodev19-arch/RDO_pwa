@@ -873,17 +873,69 @@
   //
   // O exato vem primeiro de propósito: se um dia existirem duas atividades que
   // só diferem por acento, a correspondência exata é que tem de ganhar.
-  function formularioDaAtividade(tipo){
-    var mapa = (REGRAS && REGRAS.formulario_atividade) || {};
-    if (mapa[tipo]) return mapa[tipo];
-
-    var alvo = normalizarBusca(tipo || "");
-    if (!alvo) return "padrao";
+  // A busca tolerante virou função própria porque agora serve a DOIS mapas
+  // (formulario_descricao e formulario_atividade). Duplicá-la significaria
+  // consertar o mesmo defeito de grafia duas vezes -- e ele já passou
+  // despercebido uma vez em produção.
+  function valorTolerante(mapa, chave){
+    if (mapa[chave]) return mapa[chave];
+    var alvo = normalizarBusca(chave || "");
+    if (!alvo) return null;
     var chaves = Object.keys(mapa);
     for (var i = 0; i < chaves.length; i++){
       if (normalizarBusca(chaves[i]) === alvo) return mapa[chaves[i]];
     }
-    return "padrao";
+    return null;
+  }
+  function formularioDaAtividade(tipo){
+    var mapa = (REGRAS && REGRAS.formulario_atividade) || {};
+    return valorTolerante(mapa, tipo) || "padrao";
+  }
+
+  // QUEM DECIDE O FORMULÁRIO É A DESCRIÇÃO, não o tipo de atividade (14/09).
+  //
+  // Por quê: o tipo agrupa serviços que pedem formulários diferentes. Medido
+  // nas 2.126 linhas da planilha -- dentro de "DRENAGENS IMPLANTAÇÃO" convivem
+  // "CONSTRUÇÃO DE MINI CURVA - UN" (quantidade e área, 560 linhas) e
+  // "PÁ CARREGADEIRA - HT" (só horas, 46 linhas). Um seletor por tipo não
+  // cobre os dois, e antes disso 36 dos 49 tipos caíam no padrão por falta de
+  // regra, não por escolha.
+  //
+  // O tipo continua existindo e é escolha LIVRE do operador: os dois campos
+  // não são amarrados (decisão do Fábio). O mapeamento opcional entre eles
+  // vive em REGRAS.descricoes_da_atividade -- ver descricoesDisponiveis().
+  //
+  // A reserva pelo tipo não é enfeite: os apontamentos gravados antes desta
+  // mudança não têm descrição, e sem ela cairiam todos no padrão -- inclusive
+  // os de hora-máquina, que perderiam a lista de máquinas na tela.
+  function formularioDaDescricao(descricao, tipoReserva){
+    var mapa = (REGRAS && REGRAS.formulario_descricao) || {};
+    var achou = descricao ? valorTolerante(mapa, descricao) : null;
+    if (achou) return achou;
+    return formularioDaAtividade(tipoReserva);
+  }
+
+  // Descrições oferecidas para um tipo de atividade.
+  //
+  // Sem regra, a lista vem INTEIRA: atividade e descrição não são amarradas,
+  // e o operador escolhe livremente. A amarração é opcional e existe para o
+  // dia em que o Fábio quiser restringir -- configurada no painel, por
+  // atividade. Lista vazia ou regra ausente = tudo liberado, nunca uma lista
+  // vazia na cara do operador.
+  function descricoesDisponiveis(tipo){
+    var todas = CATALOGO.descricoesAtividade || [];
+    var mapa = (REGRAS && REGRAS.descricoes_da_atividade) || {};
+    var permitidas = tipo ? valorTolerante(mapa, tipo) : null;
+    if (!permitidas || !permitidas.length) return todas;
+    // Interseção com o catálogo: uma descrição que saiu do cadastro não pode
+    // voltar à tela só porque sobrou numa regra antiga.
+    var filtradas = todas.filter(function(d){
+      for (var i = 0; i < permitidas.length; i++){
+        if (normalizarBusca(permitidas[i]) === normalizarBusca(d)) return true;
+      }
+      return false;
+    });
+    return filtradas.length ? filtradas : todas;
   }
   // Obrigatoriedade de um campo, configurável por cliente E por atividade
   // (ex: "Suzano:Construção de Aterro:Comprimento"). Se não existir uma
@@ -976,8 +1028,10 @@
   // renderTelaAtividade (equipamentos / maquinas / maquinas detalhadas).
   // "cliente" entra aqui pra calcular a obrigatoriedade de cada campo com
   // reqDinamico -- por isso deixou de ser um "req:true" fixo.
-  function camposAtividade(tipo, cliente){
-    var formulario = formularioDaAtividade(tipo);
+  // `descricao` entrou como 3º parâmetro (14/09): é ela que escolhe o
+  // formulário, e o tipo passou a ser só a reserva para apontamentos antigos.
+  function camposAtividade(tipo, cliente, descricao){
+    var formulario = formularioDaDescricao(descricao, tipo);
 
     if (formulario === "hora_maquina"){
       return [
@@ -2135,23 +2189,24 @@
     }).join("");
   }
 
-  // Mesma coisa, no layout dos cards de máquina -- lá a descrição é por
-  // máquina, então os parâmetros também são.
-  function camposDerivadosCardHtml(descricao){
-    var params = parametrosDaDescricao(descricao, unidadeDaDescricao(descricao));
-    return params.map(function(p){
-      return rotulado(p.rotulo, '<div class="campo-derivado">'+esc(p.valor)+'</div>');
-    }).join("");
-  }
+  // camposDerivadosCardHtml() morava aqui e desenhava os parâmetros dentro dos
+  // cards de máquina. Saiu em 14/09 junto com a descrição por máquina: agora a
+  // descrição é uma só, do apontamento, e camposDerivadosHtml() a cobre.
+  // Removida em vez de mantida sem chamador -- função morta faz quem lê depois
+  // procurar onde ela é usada.
 
   // Abre a lista das 108 descrições COM busca -- sem ela, rolar 108 itens em
   // campo é inviável. O `true` no fim é o que liga o filtro.
-  function abrirSeletorDescricao(valorAtual, aoEscolher){
+  //
+  // `tipo` é opcional e só restringe a lista quando existe o mapeamento
+  // configurado no painel (ver descricoesDisponiveis). Sem ele, a lista é a
+  // inteira: atividade e descrição são escolhas livres.
+  function abrirSeletorDescricao(valorAtual, aoEscolher, tipo){
     if (!CATALOGO.descricoesAtividade || !CATALOGO.descricoesAtividade.length){
       showToast("A lista de descrições ainda não foi baixada. Conecte-se uma vez para recebê-la.");
       return;
     }
-    openSheet("Descrição (tarifa)", CATALOGO.descricoesAtividade, valorAtual, aoEscolher, true);
+    openSheet("Descrição (tarifa)", descricoesDisponiveis(tipo), valorAtual, aoEscolher, true);
   }
 
   function campoHtml(campo, valor){
@@ -2219,7 +2274,7 @@
 
   function resumoAtividade(a){
     var fotoTxt = (a.fotos && a.fotos.length) ? a.fotos.length+" foto"+(a.fotos.length>1?"s":"") : null;
-    var formulario = formularioDaAtividade(a.tipo_atividade);
+    var formulario = formularioDaDescricao(a.descricao_atividade, a.tipo_atividade);
     if (formulario === "hora_maquina"){
       var partes = [];
       if (a.tipo) partes.push(a.tipo);
@@ -2712,19 +2767,22 @@
       gps: r.gps ? { lat: r.gps.lat, lng: r.gps.lng, precisao: r.gps.precisao, capturadoEm: r.gps.capturadoEm } : null,
       criadoEm: r.criadoEm, concluidoEm: r.concluidoEm,
       atividades: r.atividades.map(function(a){
-        var formulario = formularioDaAtividade(a.tipo_atividade);
+        var formulario = formularioDaDescricao(a.descricao_atividade, a.tipo_atividade);
         var maquinasPayload = (a.maquinas || []).map(function(m){
           var dados = {};
-          // A descrição vai DENTRO de dados, por máquina, nos dois formulários
-          // em que cada máquina tem produção própria. É o que permite a
-          // escavadeira estar em M³ e o caminhão em HT no mesmo apontamento --
-          // são tarifas diferentes, e a unidade decide a fórmula da produção.
+          // A descrição NÃO vai mais por máquina (14/09): ela é uma só, do
+          // apontamento, e é quem escolhe o formulário -- não caberia dentro
+          // do formulário que ela mesma escolhe.
+          //
+          // O servidor não precisou mudar por causa disso: listar_relatorios_painel
+          // já faz coalesce(m.dados->>'descricao', a.descricao_atividade), então
+          // a ausência aqui cai sozinha na descrição do apontamento. Apontamentos
+          // antigos, que têm a descrição gravada na máquina, seguem usando a
+          // deles -- o coalesce respeita quem já tem.
           if (formulario === "hora_maquina"){
-            dados = { descricao: m.descricao || null,
-                      hora_inicial: m.hora_inicial, hora_final: m.hora_final };
+            dados = { hora_inicial: m.hora_inicial, hora_final: m.hora_final };
           } else if (formulario === "maquinas_detalhado"){
             dados = {
-              descricao: m.descricao || null,
               up: m.up, trecho: m.trecho, quantidade: m.quantidade,
               comprimento_m: m.comprimento_m, largura_m: m.largura_m, profundidade_cm: m.profundidade_cm,
               hora_inicial: m.hora_inicial, hora_final: m.hora_final,
@@ -2849,14 +2907,32 @@
       '<div class="fake-select" id="sel-tipo-ativ"><span class="'+(a.tipo_atividade?"val":"placeholder")+'">'+
       esc(a.tipo_atividade||"Selecionar tipo")+'</span>'+chevronIcon()+'</div></div>';
 
-    var formulario = formularioDaAtividade(a.tipo_atividade);
+    // A DESCRIÇÃO SOBE PARA CÁ (14/09), logo abaixo do tipo e antes de tudo.
+    //
+    // Ela era um campo dentro do formulário padrão e um campo dentro de cada
+    // máquina nos outros dois. Agora que é ela quem escolhe o formulário, tem
+    // de ser decidida antes de existir formulário -- senão a regra fica
+    // circular (o formulário desenha o campo que escolhe o formulário).
+    //
+    // Continua OPCIONAL: sem ela o formulário é o Padrão, como sempre foi.
+    // Nada trava em campo por falta de descrição.
+    html += '<div class="field"><label>Descrição (tarifa)</label>'+
+      seletorDescricaoHtml(a.descricao_atividade, 'id="sel-descricao-ativ"')+
+      '<p class="helper-text">Define o formulário, o código de tarifa e a unidade de medida.</p></div>';
+    html += camposDerivadosHtml(a.descricao_atividade);
+
+    var formulario = formularioDaDescricao(a.descricao_atividade, a.tipo_atividade);
 
     if (formulario === "hora_maquina"){
-      var camposHM = camposAtividade(a.tipo_atividade, r ? r.cliente : ""); // [tipo, observacao]
+      var camposHM = camposAtividade(a.tipo_atividade, r ? r.cliente : "", a.descricao_atividade); // [tipo, observacao]
       html += campoHtml(camposHM[0], a.tipo);
 
       html += '<div class="section-title">Máquinas utilizadas</div>';
-      html += '<p class="helper-text" style="margin-top:0">Cada máquina tem sua própria hora inicial e final.</p>';
+      // A descrição saiu daqui: agora é uma só, do apontamento, e vale para
+      // todas as máquinas da lista. Na planilha é assim -- três máquinas na
+      // mesma MINI CURVA são três linhas com a MESMA descrição. Quando as
+      // tarifas são diferentes de verdade, viram apontamentos separados.
+      html += '<p class="helper-text" style="margin-top:0">Todas usam a tarifa escolhida acima. Cada máquina tem sua própria hora inicial e final.</p>';
       (a.maquinas||[]).forEach(function(m, idx){
         html += '<div class="maquina-card">'+
           '<div class="row-2">'+
@@ -2865,9 +2941,6 @@
             rotulado("Operador",
               '<div class="fake-select" data-maqidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Selecionar")+'</span>'+chevronIcon()+'</div>')+
           '</div>'+
-          rotulado("Descrição (tarifa)",
-            seletorDescricaoHtml(m.descricao, 'data-maqidx="'+idx+'" data-campo="descricao"'))+
-          camposDerivadosCardHtml(m.descricao)+
           '<div class="row-2">'+
             rotulado("Hora inicial",
               '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="'+phDinamico(r?r.cliente:"",a.tipo_atividade,"hora_inicial","Hora inicial")+'" data-maqidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">')+
@@ -2885,12 +2958,13 @@
       html += renderFotoGridHtml(a);
 
     } else if (formulario === "maquinas_detalhado"){
-      var camposMD = camposAtividade(a.tipo_atividade, r ? r.cliente : ""); // [data_execucao]
+      var camposMD = camposAtividade(a.tipo_atividade, r ? r.cliente : "", a.descricao_atividade); // [data_execucao]
       html += campoHtml(camposMD[0], a.data_execucao);
 
       var clienteAtual = r ? r.cliente : "";
       html += '<div class="section-title">Equipamentos Utilizados</div>';
-      html += '<p class="helper-text" style="margin-top:0">Pode repetir o mesmo código com dados diferentes em cada item.</p>';
+      // Aqui também a descrição saiu do card: é uma só, do apontamento.
+      html += '<p class="helper-text" style="margin-top:0">Todos usam a tarifa escolhida acima, cada um com sua própria produção. Pode repetir o mesmo código com dados diferentes.</p>';
       (a.maquinas||[]).forEach(function(m, idx){
         html += '<div class="maquina-detalhada-card">'+
           '<div class="row-2">'+
@@ -2899,9 +2973,6 @@
             rotulado("Operador",
               '<div class="fake-select" data-mdidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Selecionar")+'</span>'+chevronIcon()+'</div>')+
           '</div>'+
-          rotulado("Descrição (tarifa)",
-            seletorDescricaoHtml(m.descricao, 'data-mdidx="'+idx+'" data-campo="descricao"'))+
-          camposDerivadosCardHtml(m.descricao)+
           rotulado(phDinamico(clienteAtual,a.tipo_atividade,"up","UP (Talhão)"),
             '<input class="campo-solo campo-texto-solo" type="text" data-mdidx="'+idx+'" data-campo="up" value="'+escAttr(m.up||"")+'">')+
           rotulado(phDinamico(clienteAtual,a.tipo_atividade,"trecho","Trecho"),
@@ -2934,19 +3005,14 @@
 
     } else if (a.tipo_atividade){
       // Formulário padrão de obra: as medidas são do apontamento e há uma
-      // produção só, então a descrição também é uma só -- diferente dos
-      // formulários de máquina, onde cada uma tem a sua.
-      html += '<div class="field"><label>Descrição (tarifa) (opcional)</label>'+
-        seletorDescricaoHtml(a.descricao_atividade, 'id="sel-descricao-ativ"')+
-        '<p class="helper-text">Define o código de tarifa e a unidade de medida.</p></div>';
-      // Logo abaixo da descrição, porque é dela que sai.
-      html += camposDerivadosHtml(a.descricao_atividade);
-
+      // produção só. A descrição e os campos derivados dela já foram
+      // desenhados lá em cima, antes da bifurcação -- valem para os três
+      // formulários agora, não só para este.
       var upObrigatorioPadrao = reqDinamico(r ? r.cliente : "", a.tipo_atividade, "up");
       html += '<div class="field"><label>UP (Talhão)'+(upObrigatorioPadrao?' <span class="req">*</span>':' (opcional)')+'</label>'+
         '<input type="text" class="campo-texto" data-k="up" value="'+escAttr(a.up||"")+'"></div>';
 
-      var campos = camposAtividade(a.tipo_atividade, r ? r.cliente : "");
+      var campos = camposAtividade(a.tipo_atividade, r ? r.cliente : "", a.descricao_atividade);
       campos.forEach(function(c){ html += campoHtml(c, a[c.k]); });
 
       html += '<div class="section-title">Equipamentos utilizados</div>';
@@ -2999,13 +3065,14 @@
       }, true);   // com busca: são 50+ tipos, rolar a lista inteira em campo é lento
     };
 
-    // Descrição do formulário padrão de obra. Nos formulários de máquina o
-    // campo é por máquina, e está ligado mais abaixo.
+    // Descrição do apontamento -- vale para os TRÊS formulários agora, e é
+    // ela que escolhe qual deles aparece. Por isso o render() logo depois:
+    // trocar a descrição pode trocar a tela inteira.
     var selDescricao = document.getElementById("sel-descricao-ativ");
     if (selDescricao) selDescricao.onclick = function(){
       abrirSeletorDescricao(a.descricao_atividade, function(v){
         a.descricao_atividade = v; render();
-      });
+      }, a.tipo_atividade);
     };
 
     document.querySelectorAll("#main input.campo-numerico[data-k]").forEach(function(input){
@@ -3031,7 +3098,7 @@
         };
         return;
       }
-      var campo = camposAtividade(a.tipo_atividade, r ? r.cliente : "").filter(function(c){ return c.k === k; })[0];
+      var campo = camposAtividade(a.tipo_atividade, r ? r.cliente : "", a.descricao_atividade).filter(function(c){ return c.k === k; })[0];
       if (!campo) return;
       if (campo.t === "date"){
         sel.onclick = function(){
@@ -3098,14 +3165,6 @@
         }, true);
       };
     });
-    document.querySelectorAll('.maquina-card .fake-select[data-campo="descricao"]').forEach(function(sel){
-      sel.onclick = function(){
-        var idx = Number(sel.getAttribute("data-maqidx"));
-        abrirSeletorDescricao(a.maquinas[idx].descricao, function(v){
-          a.maquinas[idx].descricao = v; render();
-        });
-      };
-    });
     document.querySelectorAll('.maquina-card input.campo-numerico[data-campo]').forEach(function(input){
       wireCampoNumerico(input, function(n){
         var idx = Number(input.getAttribute("data-maqidx"));
@@ -3141,14 +3200,6 @@
         openSheet("Operador", operadoresDisponiveis(r), a.maquinas[idx].operador, function(v){
           a.maquinas[idx].operador = v; render();
         }, true);
-      };
-    });
-    document.querySelectorAll('.maquina-detalhada-card .fake-select[data-campo="descricao"]').forEach(function(sel){
-      sel.onclick = function(){
-        var idx = Number(sel.getAttribute("data-mdidx"));
-        abrirSeletorDescricao(a.maquinas[idx].descricao, function(v){
-          a.maquinas[idx].descricao = v; render();
-        });
       };
     });
     document.querySelectorAll('.maquina-detalhada-card input.campo-numerico-solo[data-campo]').forEach(function(campo){
@@ -3248,11 +3299,11 @@
   function validarAtividade(a, r){
     var cliente = r ? r.cliente : "";
     var faltando = [];
-    camposAtividade(a.tipo_atividade, cliente).forEach(function(c){
+    camposAtividade(a.tipo_atividade, cliente, a.descricao_atividade).forEach(function(c){
       if (!c.req) return;
       if (campoVazio(a[c.k])) faltando.push(c.l);
     });
-    var formulario = formularioDaAtividade(a.tipo_atividade);
+    var formulario = formularioDaDescricao(a.descricao_atividade, a.tipo_atividade);
     if (formulario === "hora_maquina"){
       if (!a.maquinas || !a.maquinas.length){
         faltando.push("Ao menos 1 máquina utilizada");

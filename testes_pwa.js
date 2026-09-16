@@ -526,22 +526,45 @@ if (iniPayload === -1) {
 }
 const trechoPayload = htmlCompleto.slice(iniPayload, iniPayload + 1200);
 
+// INVERTIDO EM 14/09: a descrição saiu de dentro das máquinas.
+//
+// Ela era por máquina nos dois formulários; agora é UMA, do apontamento, e é
+// ela quem escolhe o formulário -- não caberia dentro do formulário que ela
+// mesma escolhe. Estes testes fixavam o comportamento antigo e passaram a
+// fixar o novo, em vez de serem apagados: é o que impede a volta silenciosa.
 ["hora_maquina", "maquinas_detalhado"].forEach(function (form) {
   const ini = trechoPayload.indexOf('formulario === "' + form + '"');
   const ramo = trechoPayload.slice(ini, ini + 500);
-  checar("o payload manda a descrição por máquina em " + form,
-    ini !== -1 && /descricao:\s*m\.descricao/.test(ramo),
-    "as máquinas desse formulário iriam sem tarifa própria");
+  checar("o payload NÃO manda descrição por máquina em " + form,
+    ini !== -1 && !/descricao:\s*m\.descricao/.test(ramo),
+    "voltou a mandar tarifa por máquina -- a descrição do apontamento deixaria de mandar");
 });
 
-checar("os três formulários oferecem o campo na tela",
-  (htmlCompleto.match(/seletorDescricaoHtml\(/g) || []).length >= 3,
-  "algum formulário ficou sem o campo");
+// Um seletor só, no apontamento, antes da bifurcação dos formulários.
+// Conta CHAMADAS, não a definição da função -- contando as duas o teste
+// acusava "2 seletores" com o código certo.
+const chamadasSeletor = (htmlCompleto.match(/seletorDescricaoHtml\(/g) || []).length -
+                        (htmlCompleto.match(/function seletorDescricaoHtml\(/g) || []).length;
+checar("existe UM seletor de descrição, no apontamento",
+  chamadasSeletor === 1,
+  "há " + chamadasSeletor + " chamadas -- com mais de uma, a descrição volta a depender do formulário");
 
-checar("cada campo de descrição tem quem o ligue",
-  /\.fake-select\[data-campo="descricao"\][\s\S]{0,400}?abrirSeletorDescricao/.test(htmlCompleto) &&
-  /sel-descricao-ativ[\s\S]{0,200}?abrirSeletorDescricao/.test(htmlCompleto),
+checar("o seletor do apontamento está ligado",
+  /sel-descricao-ativ[\s\S]{0,300}?abrirSeletorDescricao/.test(htmlCompleto),
   "o campo abriria a lista e não gravaria, ou nem abriria");
+
+// A descrição precisa ser desenhada ANTES de o formulário ser decidido,
+// senão a regra fica circular. Esta é a ordem que garante isso.
+const corpoTela = corpoDaFuncao("renderTelaAtividade");
+checar("a descrição é desenhada antes de o formulário ser escolhido",
+  corpoTela.indexOf("sel-descricao-ativ") < corpoTela.indexOf("formularioDaDescricao("),
+  "o formulário é decidido antes do campo que o decide existir na tela");
+
+// Nenhum handler pode continuar procurando o seletor que saiu dos cards --
+// código morto que engana quem for ler depois.
+checar("não sobrou handler do seletor por máquina",
+  !/\.fake-select\[data-campo="descricao"\]/.test(htmlCompleto),
+  "ficou fiação apontando para um campo que não existe mais");
 
 // A lista real vem do banco. Uma cópia embutida aqui envelheceria sozinha
 // quando a tarifa mudasse, e ninguém perceberia -- o app mostraria itens que
@@ -747,14 +770,22 @@ const extrairDmt = new Function(corpoDaFuncao("dmtDaDescricao") + "; return dmtD
 // Olha DENTRO da função, não num raio de caracteres a partir do nome dela.
 // A primeira versão fazia isso e acusava "voltou a ser digitável" -- porque
 // logo depois da CHAMADA vem o campo UP, que tem <input>. Nada a ver com o DMT.
-const corpoDmt = corpoDaFuncao("camposDerivadosHtml") + corpoDaFuncao("camposDerivadosCardHtml");
+const corpoDmt = corpoDaFuncao("camposDerivadosHtml");
 checar("o campo de DMT é de leitura, sem input",
   /campo-derivado/.test(corpoDmt) && !/<input/.test(corpoDmt),
   "voltou a ser digitável -- aí passam a existir dois DMT para a mesma distância");
 
-checar("os campos derivados aparecem também nos cards de máquina",
-  (htmlCompleto.match(/camposDerivadosCardHtml\(m\.descricao\)/g) || []).length === 2,
-  "nos formulários de máquina a descrição é POR MÁQUINA, e os parâmetros acompanham");
+// Antes havia uma segunda função só para os cards de máquina, porque lá a
+// descrição era por máquina. Com uma descrição só, por apontamento, ela virou
+// código morto e foi removida (14/09). Os derivados agora saem uma vez, junto
+// da descrição, valendo para os três formulários.
+checar("os derivados são desenhados junto da descrição do apontamento",
+  /sel-descricao-ativ[\s\S]{0,300}?camposDerivadosHtml\(a\.descricao_atividade\)/.test(htmlCompleto),
+  "os parâmetros da descrição sumiram da tela");
+
+checar("a função morta dos cards não voltou",
+  !/camposDerivadosCardHtml/.test(htmlCompleto.replace(/\/\/[^\n]*/g, "")),
+  "camposDerivadosCardHtml voltou a ser usada -- ela pressupõe descrição por máquina");
 
 // --- os outros parâmetros embutidos na descrição ---------------------------
 // Mapeados nas 108 do catálogo: DMT (35), Nível (21), Espessura (4),
@@ -829,7 +860,7 @@ console.log("\n--- formulário achado apesar da grafia ---\n");
 
 function formularioCom(regras, tipo) {
   return new Function("REGRAS",
-    corpoDaFuncao("normalizarBusca") + corpoDaFuncao("formularioDaAtividade") +
+    corpoDaFuncao("normalizarBusca") + corpoDaFuncao("valorTolerante") + corpoDaFuncao("formularioDaAtividade") +
     "; return formularioDaAtividade;")({ formulario_atividade: regras })(tipo);
 }
 
@@ -894,9 +925,11 @@ checar("o .helper-text geral segue com a margem negativa",
 console.log("\n--- Trecho como texto livre ---\n");
 
 const montarCampos = new Function(
-  // formularioDaAtividade real, para o padrão continuar sendo o padrão
-  corpoDaFuncao("normalizarBusca") + corpoDaFuncao("formularioDaAtividade") +
-  "; var REGRAS = { formulario_atividade: {} };" +
+  // As três reais: camposAtividade decide pela descrição desde 14/09, e
+  // formularioDaDescricao cai em formularioDaAtividade como reserva.
+  corpoDaFuncao("normalizarBusca") + corpoDaFuncao("valorTolerante") +
+  corpoDaFuncao("formularioDaAtividade") + corpoDaFuncao("formularioDaDescricao") +
+  "; var REGRAS = { formulario_atividade: {}, formulario_descricao: {} };" +
   // reqDinamico é o que a tela de Configurações alimenta; o stub devolve o que
   // mandarem, para dar pra provar que a configuração continua chegando ao campo
   "; var obrigatorio = false;" +
@@ -1037,10 +1070,18 @@ checar("a dimensão vai no payload da sincronização",
 const htmlPainel = fs.readFileSync(
   path.join(__dirname, "..", "..", "..", "Painel", "index.html"), "utf8");
 
+// A segunda metade deste teste olhava CAMPOS_POR_FORMULARIO, que saiu em
+// 14/09 junto com "formulário por atividade": a matriz não filtra mais por
+// formulário, porque a atividade deixou de ter um.
 checar("o Painel oferece a flag de Dimensão por cliente",
-  /CAMPOS_CONFIGURAVEIS\s*=\s*\[[^\]]*"Dimensão"/.test(htmlPainel) &&
-  /padrao:\s*\[[^\]]*"Dimensão"/.test(htmlPainel),
+  /CAMPOS_CONFIGURAVEIS\s*=\s*\[[^\]]*"Dimensão"/.test(htmlPainel),
   "o campo não aparece na matriz de Configurações");
+
+// Procura DECLARAÇÃO e USO, não a palavra: o comentário que explica a remoção
+// cita o nome, e um teste pela palavra solta acusaria o próprio comentário.
+checar("a matriz de obrigatoriedade não filtra por formulário",
+  !/var\s+CAMPOS_POR_FORMULARIO/.test(htmlPainel) && !/CAMPOS_POR_FORMULARIO\s*\[/.test(htmlPainel),
+  "voltou a filtrar: atividade sem regra esconderia Hora Inicial/Final da configuração");
 
 checar("o Painel usa o MESMO padrão do PWA (desmarcada)",
   /PADRAO_OBRIGATORIEDADE\s*=\s*\{[^}]*"Dimensão":\s*false/.test(htmlPainel),
@@ -1097,6 +1138,126 @@ const trechoPadrao = montarCampos(false).filter(function (c) { return c.k === "t
 checar("Trecho e Fazenda são os dois texto livre",
   trechoPadrao && trechoPadrao.t === "text" && campoFazenda && campoFazenda.t === "text",
   "trecho=" + (trechoPadrao && trechoPadrao.t) + ", fazenda=" + (campoFazenda && campoFazenda.t));
+
+// ---------------------------------------------------------------------------
+// O formulário vem da DESCRIÇÃO, não do tipo de atividade (14/09)
+// ---------------------------------------------------------------------------
+// Medido nas 2.126 linhas da planilha: um tipo reúne descrições que pedem
+// formulários diferentes. Em DRENAGENS IMPLANTAÇÃO convivem CONSTRUÇÃO DE
+// MINI CURVA (quantidade e área, 560 linhas) e PÁ CARREGADEIRA - HT (só
+// horas, 46 linhas). Um seletor por tipo não cobria os dois.
+console.log("\n--- formulário pela descrição ---\n");
+
+const decidirFormulario = new Function(
+  "var REGRAS = {};" +
+  corpoDaFuncao("normalizarBusca") + corpoDaFuncao("valorTolerante") +
+  corpoDaFuncao("formularioDaAtividade") + corpoDaFuncao("formularioDaDescricao") +
+  "; return function(regras, descricao, tipo){ REGRAS = regras; return formularioDaDescricao(descricao, tipo); };"
+)();
+
+const REGRAS_REAIS = {
+  formulario_descricao: {
+    "PÁ CARREGADEIRA - HT": "hora_maquina",
+    "CONSTRUÇÃO DE MINI CURVA - NÍVEL 2 - UN": "padrao",
+    "CONSTRUÇÃO DE ATERRO - M³": "maquinas_detalhado"
+  },
+  formulario_atividade: { "DRENAGENS IMPLANTACAO": "maquinas_detalhado" }
+};
+
+// O caso que motivou a mudança: MESMO tipo, formulários diferentes.
+checar("mesmo tipo, descrições diferentes -> formulários diferentes",
+  decidirFormulario(REGRAS_REAIS, "PÁ CARREGADEIRA - HT", "DRENAGENS IMPLANTACAO") === "hora_maquina" &&
+  decidirFormulario(REGRAS_REAIS, "CONSTRUÇÃO DE MINI CURVA - NÍVEL 2 - UN", "DRENAGENS IMPLANTACAO") === "padrao",
+  "o tipo ainda está mandando -- era exatamente isso que não cobria a planilha");
+
+// A descrição vence o tipo. Sem isso a mudança não teria efeito nenhum.
+checar("a descrição vence a regra do tipo",
+  decidirFormulario(REGRAS_REAIS, "PÁ CARREGADEIRA - HT", "DRENAGENS IMPLANTACAO") === "hora_maquina",
+  "o tipo dizia maquinas_detalhado e prevaleceu");
+
+// Reserva: os apontamentos gravados antes de 14/09 não têm descrição. Sem
+// isso, todos cairiam no padrão -- inclusive os de hora-máquina, que
+// perderiam a lista de máquinas na tela.
+checar("sem descrição, vale a regra antiga do tipo",
+  decidirFormulario(REGRAS_REAIS, "", "DRENAGENS IMPLANTACAO") === "maquinas_detalhado",
+  "apontamento antigo perderia o formulário dele");
+
+checar("sem descrição e sem regra de tipo, é o padrão",
+  decidirFormulario(REGRAS_REAIS, "", "ATIVIDADE QUE NINGUÉM CONFIGUROU") === "padrao",
+  "nada pode travar por falta de configuração");
+
+// Descrição com regra ausente também cai na reserva, não em erro.
+checar("descrição sem regra cai na reserva do tipo",
+  decidirFormulario(REGRAS_REAIS, "DESCRIÇÃO QUE NÃO EXISTE", "DRENAGENS IMPLANTACAO") === "maquinas_detalhado",
+  "descrição desconhecida deveria cair na reserva");
+
+// A tolerância a grafia vale para o mapa novo também -- foi por grafia que
+// três atividades entregaram o formulário errado em produção.
+checar("acha a regra da descrição apesar de caixa e acento",
+  decidirFormulario({ formulario_descricao: { "PÁ CARREGADEIRA - HT": "hora_maquina" } },
+                    "pa carregadeira - ht", "") === "hora_maquina",
+  "a busca tolerante não está sendo aplicada ao mapa de descrições");
+
+// M³ digitado como M3 -- o mesmo defeito que já apareceu na busca do seletor.
+checar("acha a regra mesmo com M3 no lugar de M³",
+  decidirFormulario({ formulario_descricao: { "CONSTRUÇÃO DE ATERRO - M³": "maquinas_detalhado" } },
+                    "CONSTRUCAO DE ATERRO - M3", "") === "maquinas_detalhado",
+  "NFKD não está sendo aplicado -- M³ e M3 seriam chaves diferentes");
+
+// --- o mapeamento opcional atividade -> descrições -------------------------
+// Pedido do Fábio: existir na tela para o dia em que quiser amarrar. Hoje as
+// duas escolhas são livres, e SEM REGRA a lista tem de vir inteira.
+console.log("\n--- descrições por atividade (opcional) ---\n");
+
+const listarDescricoes = new Function(
+  "var REGRAS = {}, CATALOGO = {};" +
+  corpoDaFuncao("normalizarBusca") + corpoDaFuncao("valorTolerante") +
+  corpoDaFuncao("descricoesDisponiveis") +
+  "; return function(regras, catalogo, tipo){ REGRAS = regras; CATALOGO = catalogo; return descricoesDisponiveis(tipo); };"
+)();
+
+const CAT = { descricoesAtividade: ["MINI CURVA - UN", "PÁ CARREGADEIRA - HT", "ATERRO - M³"] };
+
+checar("sem regra, a lista vem inteira",
+  listarDescricoes({}, CAT, "DRENAGENS").length === 3,
+  "a lista foi restringida sem ninguém pedir -- o campo é livre por decisão do Fábio");
+
+checar("com regra, a lista vem filtrada",
+  listarDescricoes({ descricoes_da_atividade: { "DRENAGENS": ["MINI CURVA - UN"] } }, CAT, "DRENAGENS").length === 1,
+  "o mapeamento configurado no painel não está sendo aplicado");
+
+// Lista vazia na cara do operador é pior que lista grande: ele não consegue
+// lançar nada e não sabe por quê.
+checar("regra vazia não deixa o operador sem opções",
+  listarDescricoes({ descricoes_da_atividade: { "DRENAGENS": [] } }, CAT, "DRENAGENS").length === 3,
+  "uma regra vazia travaria o lançamento");
+
+checar("regra que só cita descrição fora do catálogo não esvazia a lista",
+  listarDescricoes({ descricoes_da_atividade: { "DRENAGENS": ["SERVIÇO QUE SAIU DO CADASTRO"] } }, CAT, "DRENAGENS").length === 3,
+  "descrição removida do cadastro deixaria o seletor vazio");
+
+checar("atividade sem mapeamento continua vendo tudo",
+  listarDescricoes({ descricoes_da_atividade: { "OUTRA": ["MINI CURVA - UN"] } }, CAT, "DRENAGENS").length === 3,
+  "a regra de uma atividade vazou para outra");
+
+// --- o Painel, que não tem suíte própria ------------------------------------
+checar("o Painel configura o formulário por descrição",
+  /salvarRegra\("formulario_descricao"/.test(htmlPainel) &&
+  /valorRegra\("formulario_descricao"/.test(htmlPainel),
+  "a tela de Configurações não grava nem lê a regra nova");
+
+checar("o seletor de formulário por atividade saiu do Painel",
+  !/salvarRegra\("formulario_atividade"/.test(htmlPainel),
+  "ainda dá para configurar por atividade -- duas fontes de verdade para a mesma decisão");
+
+checar("o Painel grava o mapeamento de descrições por atividade",
+  /salvarRegra\("descricoes_da_atividade"/.test(htmlPainel),
+  "o mapeamento opcional não é salvo");
+
+// 108 linhas sem busca é uma tabela que ninguém usa.
+checar("a tabela de descrições tem busca",
+  /config-busca-descricao/.test(htmlPainel) && /normalizarBuscaPainel/.test(htmlPainel),
+  "108 descrições sem filtro");
 
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
