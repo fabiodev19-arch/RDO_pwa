@@ -1206,41 +1206,36 @@ checar("acha a regra mesmo com M3 no lugar de M³",
                     "CONSTRUCAO DE ATERRO - M3", "") === "maquinas_detalhado",
   "NFKD não está sendo aplicado -- M³ e M3 seriam chaves diferentes");
 
-// --- o mapeamento opcional atividade -> descrições -------------------------
-// Pedido do Fábio: existir na tela para o dia em que quiser amarrar. Hoje as
-// duas escolhas são livres, e SEM REGRA a lista tem de vir inteira.
-console.log("\n--- descrições por atividade (opcional) ---\n");
+// --- o mapeamento opcional atividade -> descrições foi REMOVIDO (16/09) ----
+// Existiu de 14/09 a 16/09: "para o dia em que o Fábio quisesse amarrar".
+// Ele decidiu que não faz sentido na aplicação e pediu a remoção -- ninguém
+// tinha configurado nenhuma linha. Estes testes fixavam o comportamento
+// antigo; agora confirmam que ele NÃO VOLTOU, no PWA e no Painel.
+console.log("\n--- mapeamento atividade -> descrições (removido em 16/09) ---\n");
 
-const listarDescricoes = new Function(
-  "var REGRAS = {}, CATALOGO = {};" +
-  corpoDaFuncao("normalizarBusca") + corpoDaFuncao("valorTolerante") +
-  corpoDaFuncao("descricoesDisponiveis") +
-  "; return function(regras, catalogo, tipo){ REGRAS = regras; CATALOGO = catalogo; return descricoesDisponiveis(tipo); };"
-)();
+checar("descricoesDisponiveis() não existe mais no PWA",
+  !/function descricoesDisponiveis/.test(htmlCompleto),
+  "a função voltou -- o mapeamento foi religado sem pedido");
 
-const CAT = { descricoesAtividade: ["MINI CURVA - UN", "PÁ CARREGADEIRA - HT", "ATERRO - M³"] };
+checar("abrirSeletorDescricao() sempre abre a lista inteira do catálogo",
+  /openSheet\("Descrição \(tarifa\)",\s*CATALOGO\.descricoesAtividade,/.test(htmlCompleto),
+  "não está usando CATALOGO.descricoesAtividade direto -- pode ter voltado a filtrar");
 
-checar("sem regra, a lista vem inteira",
-  listarDescricoes({}, CAT, "DRENAGENS").length === 3,
-  "a lista foi restringida sem ninguém pedir -- o campo é livre por decisão do Fábio");
+checar("REGRAS.descricoes_da_atividade não é mais lido em lugar nenhum",
+  !/REGRAS\.descricoes_da_atividade/.test(htmlCompleto),
+  "algum trecho ainda lê a regra removida");
 
-checar("com regra, a lista vem filtrada",
-  listarDescricoes({ descricoes_da_atividade: { "DRENAGENS": ["MINI CURVA - UN"] } }, CAT, "DRENAGENS").length === 1,
-  "o mapeamento configurado no painel não está sendo aplicado");
+checar("o Painel não grava mais o mapeamento",
+  !/salvarRegra\("descricoes_da_atividade"/.test(htmlPainel),
+  "a tela ainda grava a regra removida");
 
-// Lista vazia na cara do operador é pior que lista grande: ele não consegue
-// lançar nada e não sabe por quê.
-checar("regra vazia não deixa o operador sem opções",
-  listarDescricoes({ descricoes_da_atividade: { "DRENAGENS": [] } }, CAT, "DRENAGENS").length === 3,
-  "uma regra vazia travaria o lançamento");
-
-checar("regra que só cita descrição fora do catálogo não esvazia a lista",
-  listarDescricoes({ descricoes_da_atividade: { "DRENAGENS": ["SERVIÇO QUE SAIU DO CADASTRO"] } }, CAT, "DRENAGENS").length === 3,
-  "descrição removida do cadastro deixaria o seletor vazio");
-
-checar("atividade sem mapeamento continua vendo tudo",
-  listarDescricoes({ descricoes_da_atividade: { "OUTRA": ["MINI CURVA - UN"] } }, CAT, "DRENAGENS").length === 3,
-  "a regra de uma atividade vazou para outra");
+// Busca o TÍTULO renderizado, não qualquer menção -- o comentário que explica
+// a remoção cita o nome antigo, e pegar texto solto acusaria o próprio
+// comentário (só apareceu ao rodar: a primeira versão deste teste falhava
+// assim, com o código já certo).
+checar("a seção 'Descrições por atividade' saiu da tela de Configurações",
+  !/>Descrições por atividade/.test(htmlPainel) && !/config-mapa-atividade/.test(htmlPainel),
+  "o título ou o seletor da seção removida ainda está no HTML");
 
 // --- o Painel, que não tem suíte própria ------------------------------------
 checar("o Painel configura o formulário por descrição",
@@ -1251,10 +1246,6 @@ checar("o Painel configura o formulário por descrição",
 checar("o seletor de formulário por atividade saiu do Painel",
   !/salvarRegra\("formulario_atividade"/.test(htmlPainel),
   "ainda dá para configurar por atividade -- duas fontes de verdade para a mesma decisão");
-
-checar("o Painel grava o mapeamento de descrições por atividade",
-  /salvarRegra\("descricoes_da_atividade"/.test(htmlPainel),
-  "o mapeamento opcional não é salvo");
 
 // 108 linhas sem busca é uma tabela que ninguém usa.
 checar("a tabela de descrições tem busca",
@@ -1410,10 +1401,36 @@ checar("Hora Inicial e Hora Final NÃO são escondíveis no card detalhado",
   !/campoSeVisivel\([^)]*"hora_final"/.test(corpoDaFuncao("renderTelaAtividade")),
   "hora inicial/final viraram escondíveis -- isso esvaziaria o próprio sentido do formulário");
 
-// --- o lado do Painel -------------------------------------------------------
-checar("o Painel oferece a seção de campos visíveis por descrição",
-  /Campos visíveis por descrição/.test(htmlPainel) && /config-campo-descricao/.test(htmlPainel),
-  "a seção não está na tela");
+// --- o lado do Painel --------------------------------------------------------
+// "Formulário por descrição" e "Campos visíveis por descrição" viraram UMA
+// seção só (16/09, pedido do Fábio: as duas giravam em torno da mesma
+// descrição e ficaram "espalhadas pela tela como se a função tivesse sido
+// criada e só jogada"). A coluna "Campos" expande DENTRO da linha -- não há
+// mais um segundo seletor de descrição.
+checar("existe uma seção única 'Descrição (tarifa)', não duas espalhadas",
+  /Descrição \(tarifa\)<\/div>/.test(htmlPainel) &&
+  !/Formulário por descrição \(tarifa\)/.test(htmlPainel) &&
+  !/>Campos visíveis por descrição</.test(htmlPainel),
+  "voltaram os dois títulos separados, ou nenhum título novo apareceu");
+
+checar("o segundo seletor de descrição (config-campo-descricao) não existe mais",
+  !/config-campo-descricao/.test(htmlPainel),
+  "sobrou o picker antigo -- duas formas de escolher a mesma descrição na tela");
+
+checar("a coluna Campos expande dentro da própria linha da tabela",
+  /btn-campos-visiveis/.test(htmlPainel) && /campos-visiveis-inline/.test(htmlPainel),
+  "o botão de expandir ou o contêiner dos checkboxes não está na tela");
+
+checar("o botão de expandir guarda a linha aberta no App (sobrevive ao render)",
+  /App\.configLinhaExpandida/.test(htmlPainel),
+  "sem estado guardado, expandir uma linha fecharia sozinho no próximo render");
+
+// O que importa de verdade é o WIRING: o handler lê a descrição do próprio
+// checkbox clicado, não de um estado de tela que poderia estar apontando
+// para outra linha se duas fossem abertas ao mesmo tempo.
+checar("o handler do checkbox lê a descrição do próprio elemento clicado",
+  /chk\.getAttribute\("data-descricao"\)/.test(htmlPainel),
+  "o checkbox pode ter voltado a depender de App.configCampoDescricao (estado de tela única)");
 
 checar("o Painel grava campos_ocultos_descricao",
   /salvarRegra\("campos_ocultos_descricao"/.test(htmlPainel),

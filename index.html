@@ -902,8 +902,8 @@
   // regra, não por escolha.
   //
   // O tipo continua existindo e é escolha LIVRE do operador: os dois campos
-  // não são amarrados (decisão do Fábio). O mapeamento opcional entre eles
-  // vive em REGRAS.descricoes_da_atividade -- ver descricoesDisponiveis().
+  // não são amarrados (decisão do Fábio, reafirmada em 16/09 ao remover o
+  // mapeamento opcional que existia aqui -- "não faz sentido" na aplicação).
   //
   // A reserva pelo tipo não é enfeite: os apontamentos gravados antes desta
   // mudança não têm descrição, e sem ela cairiam todos no padrão -- inclusive
@@ -913,29 +913,6 @@
     var achou = descricao ? valorTolerante(mapa, descricao) : null;
     if (achou) return achou;
     return formularioDaAtividade(tipoReserva);
-  }
-
-  // Descrições oferecidas para um tipo de atividade.
-  //
-  // Sem regra, a lista vem INTEIRA: atividade e descrição não são amarradas,
-  // e o operador escolhe livremente. A amarração é opcional e existe para o
-  // dia em que o Fábio quiser restringir -- configurada no painel, por
-  // atividade. Lista vazia ou regra ausente = tudo liberado, nunca uma lista
-  // vazia na cara do operador.
-  function descricoesDisponiveis(tipo){
-    var todas = CATALOGO.descricoesAtividade || [];
-    var mapa = (REGRAS && REGRAS.descricoes_da_atividade) || {};
-    var permitidas = tipo ? valorTolerante(mapa, tipo) : null;
-    if (!permitidas || !permitidas.length) return todas;
-    // Interseção com o catálogo: uma descrição que saiu do cadastro não pode
-    // voltar à tela só porque sobrou numa regra antiga.
-    var filtradas = todas.filter(function(d){
-      for (var i = 0; i < permitidas.length; i++){
-        if (normalizarBusca(permitidas[i]) === normalizarBusca(d)) return true;
-      }
-      return false;
-    });
-    return filtradas.length ? filtradas : todas;
   }
   // Obrigatoriedade de um campo, configurável por cliente E por atividade
   // (ex: "Suzano:Construção de Aterro:Comprimento"). Se não existir uma
@@ -1002,7 +979,7 @@
   // diferente da obrigatoriedade. Uma tarifa por KM não usa Profundidade; uma
   // por M² pode não usar Trecho. Sem regra, ou regra vazia, NADA fica
   // escondido -- é o comportamento de sempre, o mesmo princípio usado em
-  // descricoesDisponiveis() e formularioDaDescricao().
+  // formularioDaDescricao().
   //
   // CAMPO ESCONDIDO NUNCA PODE SER OBRIGATÓRIO -- ele simplesmente não entra
   // na lista que camposAtividade() devolve, e é essa lista que
@@ -2228,15 +2205,16 @@
   // Abre a lista das 108 descrições COM busca -- sem ela, rolar 108 itens em
   // campo é inviável. O `true` no fim é o que liga o filtro.
   //
-  // `tipo` é opcional e só restringe a lista quando existe o mapeamento
-  // configurado no painel (ver descricoesDisponiveis). Sem ele, a lista é a
-  // inteira: atividade e descrição são escolhas livres.
-  function abrirSeletorDescricao(valorAtual, aoEscolher, tipo){
+  // Sempre a lista INTEIRA: até 16/09 havia um `tipo` opcional que filtrava
+  // via um mapeamento configurável no painel (descricoesDisponiveis). Removido
+  // a pedido do Fábio -- não fazia sentido na aplicação, e ninguém o usava:
+  // atividade e descrição são e continuam sendo escolhas livres.
+  function abrirSeletorDescricao(valorAtual, aoEscolher){
     if (!CATALOGO.descricoesAtividade || !CATALOGO.descricoesAtividade.length){
       showToast("A lista de descrições ainda não foi baixada. Conecte-se uma vez para recebê-la.");
       return;
     }
-    openSheet("Descrição (tarifa)", descricoesDisponiveis(tipo), valorAtual, aoEscolher, true);
+    openSheet("Descrição (tarifa)", CATALOGO.descricoesAtividade, valorAtual, aoEscolher, true);
   }
 
   function campoHtml(campo, valor){
@@ -3106,7 +3084,7 @@
     if (selDescricao) selDescricao.onclick = function(){
       abrirSeletorDescricao(a.descricao_atividade, function(v){
         a.descricao_atividade = v; render();
-      }, a.tipo_atividade);
+      });
     };
 
     document.querySelectorAll("#main input.campo-numerico[data-k]").forEach(function(input){
