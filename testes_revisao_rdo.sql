@@ -226,7 +226,8 @@ BEGIN
     'public.verificar_atividades_devolvidas()',
     'public.salvar_push_subscription(text,text,text)',
     'public.listar_relatorios_painel(date,date,text,text,integer)',
-    'public.sincronizar_relatorio_rdo(jsonb)'
+    'public.sincronizar_relatorio_rdo(jsonb)',
+    'public.salvar_descricao_tarifa(uuid,text,text,text,numeric,boolean)'
   ]
   LOOP
     PERFORM pg_temp.checar('B', 'função existe: ' || v_f, pg_temp.existe_funcao(v_f));
@@ -247,7 +248,8 @@ BEGIN
     'public.importar_cadastros_lote(jsonb)',
     'public.listar_cadastros_admin()',
     'public.listar_regras_admin()',
-    'public.exige_mfa()'
+    'public.exige_mfa()',
+    'public.salvar_descricao_tarifa(uuid,text,text,text,numeric,boolean)'
   ]
   LOOP
     PERFORM pg_temp.checar('B', 'anon NÃO executa ' || v_f,
@@ -941,6 +943,97 @@ SELECT pg_temp.checar('C', 'quantidade preenchida vence horas e área',
 SELECT pg_temp.checar('C', 'sem medida nenhuma, a produção é nula (não zero)',
   producao_consolidada(NULL, 'M³', NULL, NULL, NULL, NULL) IS NULL,
   'zero seria lido como "produziu nada", e o certo é "não dá para calcular"');
+
+-- ============================================================================
+-- SEÇÃO C (continuação) — Descrição (Tarifa): salvar_descricao_tarifa
+-- ============================================================================
+-- Cadastros ganhou uma guia de verdade para gerenciar descrição/código/
+-- unidade/valor das tarifas (17/09, pedido do Fábio: "para quando mudar um
+-- valor de uma atividade, podermos gerenciar isso nos cadastros"). Não dava
+-- pra reaproveitar salvar_cadastro: ela chama normalizar_texto_cadastro, que
+-- tira acento ("M³" viraria "M3") e quebraria a chave que
+-- formulario_descricao e campos_ocultos_descricao usam para achar a
+-- descrição. salvar_descricao_tarifa grava o cadastro e a tarifa
+-- (regras_negocio) juntos, preservando o texto exato.
+DO $secao_c_tarifa$
+DECLARE
+  v_uid    uuid;
+  v_ret    jsonb;
+  v_id     uuid;
+  v_texto  text;
+  v_ativo  boolean;
+  v_tarifa jsonb;
+BEGIN
+  SELECT id INTO v_uid FROM auth.users ORDER BY created_at LIMIT 1;
+  IF v_uid IS NULL THEN
+    PERFORM pg_temp.pular('C', 'salvar_descricao_tarifa', 'auth.users vazia');
+    RETURN;
+  END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+
+  -- criar, com acento e minúscula de propósito
+  v_ret := salvar_descricao_tarifa(NULL, 'teste bateria âçãocriação - un', '99001', 'UN', 55.5, true);
+  v_id := (v_ret->>'id')::uuid;
+  SELECT valor INTO v_texto FROM cadastros WHERE id = v_id;
+  PERFORM pg_temp.checar('C', 'tarifa: cria preservando acento e maiúscula',
+    v_texto = 'TESTE BATERIA ÂÇÃOCRIAÇÃO - UN', 'gravou: ' || coalesce(v_texto, 'NULL'));
+
+  SELECT valor INTO v_tarifa FROM regras_negocio WHERE tipo_regra = 'tarifa_descricao' AND chave = v_texto;
+  PERFORM pg_temp.checar('C', 'tarifa: regras_negocio grava com a MESMA chave',
+    v_tarifa->>'codigo' = '99001' AND v_tarifa->>'unidade' = 'UN' AND (v_tarifa->>'valor_unitario')::numeric = 55.5,
+    'tarifa: ' || coalesce(v_tarifa::text, 'NULL'));
+
+  -- editar: código/unidade/valor mudam, descrição NÃO muda mesmo mandando outro texto
+  PERFORM salvar_descricao_tarifa(v_id, 'TEXTO QUE DEVERIA SER IGNORADO', '99002', 'HT', 77.7, true);
+  SELECT valor INTO v_texto FROM cadastros WHERE id = v_id;
+  PERFORM pg_temp.checar('C', 'tarifa: editar NÃO renomeia a descrição',
+    v_texto = 'TESTE BATERIA ÂÇÃOCRIAÇÃO - UN', 'virou: ' || coalesce(v_texto, 'NULL'));
+  SELECT r.valor INTO v_tarifa FROM regras_negocio r WHERE r.tipo_regra = 'tarifa_descricao' AND r.chave = v_texto;
+  PERFORM pg_temp.checar('C', 'tarifa: editar troca código/unidade/valor',
+    v_tarifa->>'codigo' = '99002' AND v_tarifa->>'unidade' = 'HT' AND (v_tarifa->>'valor_unitario')::numeric = 77.7,
+    'tarifa depois de editar: ' || coalesce(v_tarifa::text, 'NULL'));
+
+  -- desativar reaproveita excluir_cadastro (genérico) -- só toca `ativo`,
+  -- seguro pra qualquer categoria, conferido lendo o corpo da função.
+  PERFORM excluir_cadastro(v_id);
+  SELECT ativo INTO v_ativo FROM cadastros WHERE id = v_id;
+  PERFORM pg_temp.checar('C', 'tarifa: excluir_cadastro desativa', v_ativo = false);
+
+  -- reativar via salvar_descricao_tarifa -- o caso crítico: acento sobrevive
+  -- (reativar pelo salvar_cadastro genérico normalizaria e perderia)
+  PERFORM salvar_descricao_tarifa(v_id, NULL, '99002', 'HT', 77.7, true);
+  SELECT valor, ativo INTO v_texto, v_ativo FROM cadastros WHERE id = v_id;
+  PERFORM pg_temp.checar('C', 'tarifa: reativar preserva o acento',
+    v_ativo = true AND v_texto = 'TESTE BATERIA ÂÇÃOCRIAÇÃO - UN',
+    'valor=' || coalesce(v_texto,'NULL') || ' ativo=' || v_ativo);
+
+  BEGIN
+    PERFORM salvar_descricao_tarifa(NULL, v_texto, '99003', 'UN', 1, true);
+    PERFORM pg_temp.checar('C', 'tarifa: duplicata é recusada', false, 'não falhou -- criou duplicata');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'tarifa: duplicata é recusada', true);
+  END;
+
+  BEGIN
+    PERFORM salvar_descricao_tarifa(NULL, 'TESTE BATERIA OUTRO ITEM - UN', '99004', 'UN', 0, true);
+    PERFORM pg_temp.checar('C', 'tarifa: valor zero é recusado', false, 'não falhou');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'tarifa: valor zero é recusado', true);
+  END;
+
+  BEGIN
+    PERFORM salvar_descricao_tarifa(NULL, 'TESTE BATERIA OUTRO ITEM 2 - UN', '', 'UN', 10, true);
+    PERFORM pg_temp.checar('C', 'tarifa: sem código é recusado', false, 'não falhou');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'tarifa: sem código é recusado', true);
+  END;
+
+  PERFORM set_config('request.jwt.claims', '', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.checar('C', 'salvar_descricao_tarifa', false, SQLERRM);
+END $secao_c_tarifa$;
 
 -- ============================================================================
 -- SEÇÃO D — regressão: o que já funcionava tem que continuar funcionando
