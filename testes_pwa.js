@@ -1408,10 +1408,56 @@ checar("Hora Inicial e Hora Final NÃO são escondíveis no card detalhado",
 // criada e só jogada"). A coluna "Campos" expande DENTRO da linha -- não há
 // mais um segundo seletor de descrição.
 checar("existe uma seção única 'Descrição (tarifa)', não duas espalhadas",
-  /Descrição \(tarifa\)<\/div>/.test(htmlPainel) &&
+  /<h2>Descrição \(tarifa\)<\/h2>/.test(htmlPainel) &&
   !/Formulário por descrição \(tarifa\)/.test(htmlPainel) &&
   !/>Campos visíveis por descrição</.test(htmlPainel),
   "voltaram os dois títulos separados, ou nenhum título novo apareceu");
+
+// --- guias internas de Configurações (17/09) --------------------------------
+// Pedido do Fábio: "Campos obrigatórios por cliente" não estava num "padrão
+// vendável/profissional" dividindo a tela com "Descrição (tarifa)". As duas
+// ganharam guia própria, reaproveitando a MESMA fórmula visual das abas
+// principais do app (.abas) -- "profissional" aqui é "consistente com o
+// resto do app", não um terceiro estilo inventado.
+console.log("\n--- guias internas de Configurações ---\n");
+
+// O id vem de CONFIG_GUIAS iterado (data-config-guia="'+g.id+'"), então
+// procurar a string literal no CÓDIGO-FONTE não bate -- é o array que
+// precisa ter os dois ids certos.
+checar("existem as duas guias, com os ids certos",
+  /id:"descricao"/.test(htmlPainel) && /id:"obrigatoriedade"/.test(htmlPainel) &&
+  /data-config-guia="'\s*\+\s*g\.id\s*\+\s*'"/.test(htmlPainel),
+  "faltou uma das duas guias no array CONFIG_GUIAS, ou o botão não usa g.id");
+
+checar("o clique na guia troca App.configGuia e re-renderiza",
+  /App\.configGuia\s*=\s*btn\.getAttribute\("data-config-guia"\)/.test(htmlPainel),
+  "o wiring não está trocando a guia ativa");
+
+checar("as guias reaproveitam a classe 'active' das abas principais (mesmo padrão visual)",
+  /guiaAtual===g\.id\?"active":""/.test(htmlPainel),
+  "as guias não marcam a ativa do mesmo jeito que .abas button.active");
+
+checar("as duas telas de configuração viraram funções próprias (não uma só gigante)",
+  /function renderConfigDescricao/.test(htmlPainel) && /function renderConfigObrigatoriedade/.test(htmlPainel),
+  "renderTelaConfiguracoes voltou a fazer tudo numa função só");
+
+// --- largura total, não mais dividida lado a lado ---------------------------
+checar("as tabelas usam o cartão em largura total (mesmo padrão do Histórico)",
+  /class="card-config"/.test(htmlPainel) && /class="tabela-config"/.test(htmlPainel),
+  "não migrou para o padrão .card-hist/.tabela-hist reaproveitado");
+
+checar("sumiu o max-width:820px que espremia a tabela de descrições",
+  !/max-width:820px/.test(htmlPainel),
+  "a tabela de descrição ainda está limitada em largura");
+
+checar("as duas seções não dividem mais espaço lado a lado (.config-row/.config-section sumiram)",
+  !/class="config-row"/.test(htmlPainel) && !/class="config-section"/.test(htmlPainel),
+  "o layout flex-wrap lado a lado ainda existe");
+
+// --- coluna "Campo" fixa ao rolar, para a matriz crescer sem perder contexto
+checar("a coluna Campo da matriz de obrigatoriedade fica fixa ao rolar (col-campo, sticky)",
+  /col-campo/.test(htmlPainel) && /position:sticky; left:0/.test(htmlPainel),
+  "sem isso, muitos clientes tiram o nome do campo de vista ao rolar de lado");
 
 checar("o segundo seletor de descrição (config-campo-descricao) não existe mais",
   !/config-campo-descricao/.test(htmlPainel),
