@@ -925,11 +925,13 @@ checar("o .helper-text geral segue com a margem negativa",
 console.log("\n--- Trecho como texto livre ---\n");
 
 const montarCampos = new Function(
-  // As três reais: camposAtividade decide pela descrição desde 14/09, e
-  // formularioDaDescricao cai em formularioDaAtividade como reserva.
+  // As quatro reais: camposAtividade decide pela descrição desde 14/09,
+  // formularioDaDescricao cai em formularioDaAtividade como reserva, e desde
+  // 16/09 camposAtividade filtra por campoVisivelParaDescricao no fim.
   corpoDaFuncao("normalizarBusca") + corpoDaFuncao("valorTolerante") +
   corpoDaFuncao("formularioDaAtividade") + corpoDaFuncao("formularioDaDescricao") +
-  "; var REGRAS = { formulario_atividade: {}, formulario_descricao: {} };" +
+  blocoVar("NOME_REGRA_CAMPO") + corpoDaFuncao("campoVisivelParaDescricao") +
+  "; var REGRAS = { formulario_atividade: {}, formulario_descricao: {}, campos_ocultos_descricao: {} };" +
   // reqDinamico é o que a tela de Configurações alimenta; o stub devolve o que
   // mandarem, para dar pra provar que a configuração continua chegando ao campo
   "; var obrigatorio = false;" +
@@ -1258,6 +1260,175 @@ checar("o Painel grava o mapeamento de descrições por atividade",
 checar("a tabela de descrições tem busca",
   /config-busca-descricao/.test(htmlPainel) && /normalizarBuscaPainel/.test(htmlPainel),
   "108 descrições sem filtro");
+
+// ---------------------------------------------------------------------------
+// Campos visíveis por descrição (16/09)
+// ---------------------------------------------------------------------------
+// Eixo diferente de obrigatoriedade: aqui a configuração decide se o campo
+// APARECE, não se ele trava vazio. O risco central, e por isso o teste mais
+// importante deste bloco: um campo ESCONDIDO nunca pode continuar sendo
+// cobrado como obrigatório -- seria a mesma armadilha do NOT NULL do
+// arquivo 1 (08/09), um requisito sem caminho de atender.
+console.log("\n--- campos visíveis por descrição ---\n");
+
+const visivel = new Function(
+  "var REGRAS = {};" +
+  corpoDaFuncao("normalizarBusca") + corpoDaFuncao("valorTolerante") +
+  blocoVar("NOME_REGRA_CAMPO") + corpoDaFuncao("campoVisivelParaDescricao") +
+  "; return function(regras, descricao, chaveInterna){ REGRAS = regras; return campoVisivelParaDescricao(descricao, chaveInterna); };"
+)();
+
+checar("sem regra nenhuma, o campo aparece",
+  visivel({}, "CONSTRUÇÃO DE ATERRO - M³", "profundidade_cm") === true,
+  "escondeu sem ninguém configurar nada");
+
+checar("regra com o campo na lista esconde",
+  visivel({ campos_ocultos_descricao: { "CONSTRUÇÃO DE ATERRO - M³": ["Profundidade"] } },
+          "CONSTRUÇÃO DE ATERRO - M³", "profundidade_cm") === false,
+  "o campo continuou aparecendo apesar da regra");
+
+checar("regra vazia não esconde nada (mesmo princípio de descricoes_da_atividade)",
+  visivel({ campos_ocultos_descricao: { "CONSTRUÇÃO DE ATERRO - M³": [] } },
+          "CONSTRUÇÃO DE ATERRO - M³", "profundidade_cm") === true,
+  "lista vazia escondeu o campo -- deveria ser o mesmo que não configurar");
+
+checar("esconder um campo não esconde os outros da mesma descrição",
+  visivel({ campos_ocultos_descricao: { "CONSTRUÇÃO DE ATERRO - M³": ["Profundidade"] } },
+          "CONSTRUÇÃO DE ATERRO - M³", "comprimento_m") === true,
+  "Comprimento sumiu junto -- o filtro não é por campo");
+
+checar("a regra de uma descrição não vaza para outra",
+  visivel({ campos_ocultos_descricao: { "OUTRA DESCRIÇÃO": ["Profundidade"] } },
+          "CONSTRUÇÃO DE ATERRO - M³", "profundidade_cm") === true,
+  "regra de outra descrição escondeu aqui");
+
+checar("busca tolerante também vale aqui (mesmo defeito de grafia já corrigido antes)",
+  visivel({ campos_ocultos_descricao: { "construcao de aterro - m3": ["Profundidade"] } },
+          "CONSTRUÇÃO DE ATERRO - M³", "profundidade_cm") === false,
+  "NFKD não aplicado -- M³ e M3/maiúscula deveriam casar");
+
+checar("campo sem nome de negócio (equipamento, operador) nunca é escondível",
+  visivel({ campos_ocultos_descricao: { X: ["Equipamento"] } }, "X", "equipamento") === true,
+  "um campo estrutural virou escondível");
+
+// camposAtividade() de verdade: confirma que o filtro chega ao array que a
+// tela desenha E que valida o formulário, não só à função isolada.
+const camposComOcultos = new Function(
+  "var REGRAS = {};" +
+  corpoDaFuncao("normalizarBusca") + corpoDaFuncao("valorTolerante") +
+  corpoDaFuncao("formularioDaAtividade") + corpoDaFuncao("formularioDaDescricao") +
+  blocoVar("NOME_REGRA_CAMPO") + corpoDaFuncao("campoVisivelParaDescricao") +
+  "; function reqDinamico(){ return false; }" +
+  "; var CATALOGO = {};" +
+  corpoDaFuncao("camposAtividade") +
+  "; return function(regras, descricao){ REGRAS = regras; return camposAtividade('PATROLAMENTO','',descricao); };"
+)();
+
+const camposComTudoOculto = camposComOcultos(
+  { campos_ocultos_descricao: { X: ["Profundidade", "Comprimento", "Largura", "Trecho", "Dimensão"] } }, "X"
+).map(function (c) { return c.k; });
+checar("camposAtividade() de fato remove os campos escondidos do array",
+  camposComTudoOculto.length === 1 && camposComTudoOculto[0] === "observacao",
+  "sobrou: " + JSON.stringify(camposComTudoOculto) + " -- só Observação deveria restar");
+
+// O ponto que mais importa: escondido + marcado obrigatório = nunca cobrado.
+const harnessValidar = new Function(
+  "var REGRAS = {};" +
+  corpoDaFuncao("normalizarBusca") + corpoDaFuncao("valorTolerante") +
+  corpoDaFuncao("formularioDaAtividade") + corpoDaFuncao("formularioDaDescricao") +
+  blocoVar("NOME_REGRA_CAMPO") + corpoDaFuncao("campoVisivelParaDescricao") +
+  blocoVar("PADRAO_OBRIGATORIEDADE") + corpoDaFuncao("campoObrigatorioPara") + corpoDaFuncao("reqDinamico") +
+  corpoDaFuncao("campoVazio") + corpoDaFuncao("nomesFaltando") +
+  "; var CATALOGO = {};" +
+  corpoDaFuncao("camposAtividade") + corpoDaFuncao("validarAtividade") +
+  "; return function(regras, a, r){ REGRAS = regras; return validarAtividade(a, r); };"
+)();
+
+// UP obrigatório para o cliente, E escondido para a descrição escolhida --
+// o caso exato que travaria o envio se o filtro não alcançasse a validação.
+const faltandoComUpOculto = harnessValidar(
+  {
+    campo_obrigatorio: { "Colheita:UP": true },
+    campos_ocultos_descricao: { "SERVIÇO SEM UP": ["UP"] }
+  },
+  { tipo_atividade: "PATROLAMENTO", descricao_atividade: "SERVIÇO SEM UP", up: "", equipamentos: [{ equipamento: "MN-006", operador: "JOSE" }] },
+  { cliente: "Colheita" }
+);
+checar("UP obrigatório MAS escondido não trava o envio",
+  faltandoComUpOculto.indexOf("UP") === -1,
+  "faltando: " + JSON.stringify(faltandoComUpOculto) + " -- um campo invisível travaria o operador sem saída");
+
+// Contraprova: sem a regra de ocultar, o mesmo UP obrigatório TEM que travar
+// -- prova que o teste acima testa o esconder, não um validarAtividade quebrado.
+const faltandoSemOcultar = harnessValidar(
+  { campo_obrigatorio: { "Colheita:UP": true } },
+  { tipo_atividade: "PATROLAMENTO", descricao_atividade: "", up: "", equipamentos: [{ equipamento: "MN-006", operador: "JOSE" }] },
+  { cliente: "Colheita" }
+);
+checar("contraprova: sem esconder, UP obrigatório vazio TEM que travar",
+  faltandoSemOcultar.indexOf("UP") !== -1,
+  "não travou -- o teste anterior não provaria nada se este também passasse escondendo por acidente");
+
+// O mesmo, no formulário Máquinas Detalhado -- lista fixa (camposPorMaquina),
+// não passa pelo array que camposAtividade() filtra sozinha.
+const camposComTudoOcultoDetalhado = camposComOcultos(
+  { formulario_descricao: { "OBRA DETALHADA": "maquinas_detalhado" },
+    campos_ocultos_descricao: { "OBRA DETALHADA": ["UP"] } },
+  "OBRA DETALHADA"
+);
+checar("no Máquinas Detalhado, camposAtividade() nem chega a ver os campos por máquina",
+  camposComTudoOcultoDetalhado.length === 1 && camposComTudoOcultoDetalhado[0].k === "data_execucao",
+  "formulário mudou de forma inesperada -- não é este ponto que filtra os campos da máquina");
+
+const faltandoDetalhadoComUpOculto = harnessValidar(
+  {
+    formulario_descricao: { "OBRA DETALHADA": "maquinas_detalhado" },
+    campo_obrigatorio: { "Colheita:UP": true },
+    campos_ocultos_descricao: { "OBRA DETALHADA": ["UP"] }
+  },
+  { tipo_atividade: "PATROLAMENTO", descricao_atividade: "OBRA DETALHADA", data_execucao: "2026-09-16",
+    maquinas: [{ equipamento: "MN-006", operador: "JOSE", up: "" }] },
+  { cliente: "Colheita" }
+);
+checar("Máquinas Detalhado: UP obrigatório MAS escondido não trava (camposPorMaquina filtrado)",
+  faltandoDetalhadoComUpOculto.join(" ").indexOf("UP") === -1,
+  "faltando: " + JSON.stringify(faltandoDetalhadoComUpOculto));
+
+// A tela: o campo tem que sumir de onde é DESENHADO, não só de onde é
+// validado -- as duas coisas moram em lugares diferentes do código.
+checar("renderTelaAtividade consulta a visibilidade antes de desenhar o UP do padrão",
+  /campoVisivelParaDescricao\(a\.descricao_atividade,\s*"up"\)/.test(corpoDaFuncao("renderTelaAtividade")),
+  "o UP do formulário padrão é desenhado sem checar visibilidade");
+
+checar("os campos do card de Máquinas Detalhado passam por campoSeVisivel",
+  (corpoDaFuncao("renderTelaAtividade").match(/campoSeVisivel\(/g) || []).length >= 5,
+  "poucos campos do card estão protegidos -- algum ficaria sempre visível");
+
+// Hora Inicial/Final nunca podem sumir: são o núcleo do registro de tempo.
+checar("Hora Inicial e Hora Final NÃO são escondíveis no card detalhado",
+  !/campoSeVisivel\([^)]*"hora_inicial"/.test(corpoDaFuncao("renderTelaAtividade")) &&
+  !/campoSeVisivel\([^)]*"hora_final"/.test(corpoDaFuncao("renderTelaAtividade")),
+  "hora inicial/final viraram escondíveis -- isso esvaziaria o próprio sentido do formulário");
+
+// --- o lado do Painel -------------------------------------------------------
+checar("o Painel oferece a seção de campos visíveis por descrição",
+  /Campos visíveis por descrição/.test(htmlPainel) && /config-campo-descricao/.test(htmlPainel),
+  "a seção não está na tela");
+
+checar("o Painel grava campos_ocultos_descricao",
+  /salvarRegra\("campos_ocultos_descricao"/.test(htmlPainel),
+  "a tela não persiste a configuração");
+
+checar("Hora Máquina não tem campo escondível no Painel (só Tipo/Observação, que são o núcleo)",
+  /CAMPOS_ESCONDIVEIS_POR_FORMULARIO\s*=\s*\{[^}]*\}/.test(htmlPainel) &&
+  !new RegExp("hora_maquina\\s*:\\s*\\[").test(
+    (htmlPainel.match(/CAMPOS_ESCONDIVEIS_POR_FORMULARIO\s*=\s*\{[\s\S]*?\n  \};/) || [""])[0]),
+  "hora_maquina ganhou uma lista de campos escondíveis sem ninguém pedir");
+
+checar("Padrão e Máquinas Detalhado têm campos escondíveis no Painel",
+  /padrao:\s*\[[^\]]*"Profundidade"/.test(htmlPainel) &&
+  /maquinas_detalhado:\s*\[[^\]]*"Profundidade"/.test(htmlPainel),
+  "a lista de campos escondíveis não cobre os dois formulários");
 
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");

@@ -990,6 +990,33 @@
   function phDinamico(cliente, atividade, chaveInterna, textoBase){
     return textoBase + (reqDinamico(cliente, atividade, chaveInterna) ? "" : " (opcional)");
   }
+  // Envolve um pedaço de HTML já pronto -- usado onde o campo é montado direto
+  // na concatenação (cards de máquina), fora do array que camposAtividade()
+  // filtra sozinha. Devolve "" (não null/undefined) porque tudo aqui é
+  // concatenado com +.
+  function campoSeVisivel(descricao, chaveInterna, htmlDoCampo){
+    return campoVisivelParaDescricao(descricao, chaveInterna) ? htmlDoCampo : "";
+  }
+
+  // Quais campos aparecem, configurável POR DESCRIÇÃO (16/09) -- eixo
+  // diferente da obrigatoriedade. Uma tarifa por KM não usa Profundidade; uma
+  // por M² pode não usar Trecho. Sem regra, ou regra vazia, NADA fica
+  // escondido -- é o comportamento de sempre, o mesmo princípio usado em
+  // descricoesDisponiveis() e formularioDaDescricao().
+  //
+  // CAMPO ESCONDIDO NUNCA PODE SER OBRIGATÓRIO -- ele simplesmente não entra
+  // na lista que camposAtividade() devolve, e é essa lista que
+  // validarAtividade() percorre. Um campo que o operador nunca vê mas que
+  // trava o envio seria a mesma armadilha do NOT NULL do arquivo 1 (08/09):
+  // exigir algo que não existe caminho de preencher.
+  function campoVisivelParaDescricao(descricao, chaveInterna){
+    if (!descricao) return true;
+    var nome = NOME_REGRA_CAMPO[chaveInterna];
+    if (!nome) return true; // campo sem nome de negócio nunca é escondível
+    var mapa = (REGRAS && REGRAS.campos_ocultos_descricao) || {};
+    var ocultos = valorTolerante(mapa, descricao) || [];
+    return ocultos.indexOf(nome) === -1;
+  }
 
   // A ORDEM aqui é a ordem na tela, e foi definida pelo Fábio em 10/09. Empresa
   // não entra no array: é fixo ("GTM"), desenhado antes e travado.
@@ -1077,7 +1104,10 @@
     // formulários concordam.)
     campos.push({ k:"trecho", l:"Trecho", t:"text", ph:"Ex.: CAP-05", req:reqDinamico(cliente,tipo,"trecho") });
     campos.push({ k:"observacao", l:"Observação", t:"textarea", req:reqDinamico(cliente,tipo,"observacao"), ph:"Descreva o serviço executado" });
-    return campos;
+    // Filtra por último, depois de montada: assim a lista de campos
+    // ESCONDIDOS usa a mesma chave (c.k) que decide a obrigatoriedade --
+    // nenhum campo passa a existir em dois lugares com nomes diferentes.
+    return campos.filter(function(c){ return campoVisivelParaDescricao(descricao, c.k); });
   }
 
   /* ======================= ESTADO ======================= */
@@ -2973,20 +3003,22 @@
             rotulado("Operador",
               '<div class="fake-select" data-mdidx="'+idx+'" data-campo="operador"><span class="'+(m.operador?"val":"placeholder")+'">'+esc(m.operador||"Selecionar")+'</span>'+chevronIcon()+'</div>')+
           '</div>'+
-          rotulado(phDinamico(clienteAtual,a.tipo_atividade,"up","UP (Talhão)"),
-            '<input class="campo-solo campo-texto-solo" type="text" data-mdidx="'+idx+'" data-campo="up" value="'+escAttr(m.up||"")+'">')+
-          rotulado(phDinamico(clienteAtual,a.tipo_atividade,"trecho","Trecho"),
-            '<input class="campo-solo campo-texto-solo" type="text" data-mdidx="'+idx+'" data-campo="trecho" value="'+escAttr(m.trecho||"")+'">')+
-          rotulado(phDinamico(clienteAtual,a.tipo_atividade,"quantidade","Quantidade"),
-            '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="quantidade" value="'+escAttr(m.quantidade==null?"":formatarNumeroExibicao(m.quantidade))+'">')+
+          campoSeVisivel(a.descricao_atividade, "up", rotulado(phDinamico(clienteAtual,a.tipo_atividade,"up","UP (Talhão)"),
+            '<input class="campo-solo campo-texto-solo" type="text" data-mdidx="'+idx+'" data-campo="up" value="'+escAttr(m.up||"")+'">'))+
+          campoSeVisivel(a.descricao_atividade, "trecho", rotulado(phDinamico(clienteAtual,a.tipo_atividade,"trecho","Trecho"),
+            '<input class="campo-solo campo-texto-solo" type="text" data-mdidx="'+idx+'" data-campo="trecho" value="'+escAttr(m.trecho||"")+'">'))+
+          campoSeVisivel(a.descricao_atividade, "quantidade", rotulado(phDinamico(clienteAtual,a.tipo_atividade,"quantidade","Quantidade"),
+            '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="quantidade" value="'+escAttr(m.quantidade==null?"":formatarNumeroExibicao(m.quantidade))+'">'))+
           '<div class="row-2">'+
-            rotulado(phDinamico(clienteAtual,a.tipo_atividade,"comprimento_m","Comprimento (m)"),
-              '<input class="campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="comprimento_m" value="'+escAttr(m.comprimento_m==null?"":formatarNumeroExibicao(m.comprimento_m))+'">')+
-            rotulado(phDinamico(clienteAtual,a.tipo_atividade,"largura_m","Largura (m)"),
-              '<input class="campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="largura_m" value="'+escAttr(m.largura_m==null?"":formatarNumeroExibicao(m.largura_m))+'">')+
+            campoSeVisivel(a.descricao_atividade, "comprimento_m", rotulado(phDinamico(clienteAtual,a.tipo_atividade,"comprimento_m","Comprimento (m)"),
+              '<input class="campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="comprimento_m" value="'+escAttr(m.comprimento_m==null?"":formatarNumeroExibicao(m.comprimento_m))+'">'))+
+            campoSeVisivel(a.descricao_atividade, "largura_m", rotulado(phDinamico(clienteAtual,a.tipo_atividade,"largura_m","Largura (m)"),
+              '<input class="campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="largura_m" value="'+escAttr(m.largura_m==null?"":formatarNumeroExibicao(m.largura_m))+'">'))+
           '</div>'+
-          rotulado(phDinamico(clienteAtual,a.tipo_atividade,"profundidade_cm","Profundidade (cm)"),
-            '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="profundidade_cm" value="'+escAttr(m.profundidade_cm==null?"":formatarNumeroExibicao(m.profundidade_cm))+'">')+
+          campoSeVisivel(a.descricao_atividade, "profundidade_cm", rotulado(phDinamico(clienteAtual,a.tipo_atividade,"profundidade_cm","Profundidade (cm)"),
+            '<input class="campo-solo campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="profundidade_cm" value="'+escAttr(m.profundidade_cm==null?"":formatarNumeroExibicao(m.profundidade_cm))+'">'))+
+          // Hora inicial/final não passam por campoSeVisivel: são o núcleo do
+          // registro de máquina, sempre presentes.
           '<div class="row-2">'+
             rotulado(phDinamico(clienteAtual,a.tipo_atividade,"hora_inicial","H. inicial"),
               '<input class="campo-numerico-solo" type="text" inputmode="decimal" data-mdidx="'+idx+'" data-campo="hora_inicial" value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">')+
@@ -3008,9 +3040,11 @@
       // produção só. A descrição e os campos derivados dela já foram
       // desenhados lá em cima, antes da bifurcação -- valem para os três
       // formulários agora, não só para este.
-      var upObrigatorioPadrao = reqDinamico(r ? r.cliente : "", a.tipo_atividade, "up");
-      html += '<div class="field"><label>UP (Talhão)'+(upObrigatorioPadrao?' <span class="req">*</span>':' (opcional)')+'</label>'+
-        '<input type="text" class="campo-texto" data-k="up" value="'+escAttr(a.up||"")+'"></div>';
+      if (campoVisivelParaDescricao(a.descricao_atividade, "up")){
+        var upObrigatorioPadrao = reqDinamico(r ? r.cliente : "", a.tipo_atividade, "up");
+        html += '<div class="field"><label>UP (Talhão)'+(upObrigatorioPadrao?' <span class="req">*</span>':' (opcional)')+'</label>'+
+          '<input type="text" class="campo-texto" data-k="up" value="'+escAttr(a.up||"")+'"></div>';
+      }
 
       var campos = camposAtividade(a.tipo_atividade, r ? r.cliente : "", a.descricao_atividade);
       campos.forEach(function(c){ html += campoHtml(c, a[c.k]); });
@@ -3314,7 +3348,12 @@
         if (faltouAlgumaHM) faltando.push("Equipamento, operador e horas de todas as máquinas da lista");
       }
     } else if (formulario === "maquinas_detalhado"){
-      var camposPorMaquina = ["up","trecho","quantidade","comprimento_m","largura_m","profundidade_cm","hora_inicial","hora_final","observacao"];
+      // Filtrado pela visibilidade da descrição -- um campo escondido nunca
+      // pode travar o envio. É a mesma regra do formulário padrão, só que
+      // aqui a lista é fixa (não vem de camposAtividade), então o filtro
+      // precisa ser feito na mão.
+      var camposPorMaquina = ["up","trecho","quantidade","comprimento_m","largura_m","profundidade_cm","hora_inicial","hora_final","observacao"]
+        .filter(function(k){ return campoVisivelParaDescricao(a.descricao_atividade, k); });
       if (!a.maquinas || !a.maquinas.length){
         faltando.push("Ao menos 1 equipamento utilizado");
       } else {
@@ -3327,7 +3366,11 @@
         if (listaNomes.length) faltando.push("Campos obrigatórios pendentes em algum equipamento: "+listaNomes.join(", "));
       }
     } else {
-      faltando = faltando.concat(nomesFaltando(a, cliente, a.tipo_atividade, ["up"]));
+      // UP é tratado fora de camposAtividade() (ver renderTelaAtividade),
+      // então o filtro de visibilidade entra aqui também.
+      if (campoVisivelParaDescricao(a.descricao_atividade, "up")){
+        faltando = faltando.concat(nomesFaltando(a, cliente, a.tipo_atividade, ["up"]));
+      }
       if (!a.equipamentos || !a.equipamentos.length){
         faltando.push("Ao menos 1 equipamento utilizado");
       } else if (a.equipamentos.some(function(eq){ return !eq.equipamento || !eq.operador; })){
