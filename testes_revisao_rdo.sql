@@ -109,6 +109,9 @@ BEGIN
     'atividades.excluido_por',
     'atividades.descricao_atividade',
     'atividades.dimensao_m',
+    'atividades.editado_por',
+    'atividades.editado_em',
+    'atividades.producao_devolvida_indice',
     'relatorios.criado_por'
   ]
   LOOP
@@ -121,6 +124,31 @@ BEGIN
       ));
   END LOOP;
 END $secao_a$;
+
+-- As três colunas de 17/09 (edição pelo painel + retrato da produção devolvida)
+-- PRECISAM ser nullable, e isso não é detalhe: é a lição de 08/09, quando um
+-- ADD COLUMN ... NOT NULL derrubou a sincronização de quem estava em campo,
+-- porque a sincronizar_relatorio_rdo publicada não preenchia a coluna nova.
+-- Apontamento nunca editado tem editado_por/editado_em nulos, e devolução sem
+-- produção específica tem índice nulo -- nulo aqui é o estado NORMAL, não falta
+-- de dado.
+DO $secao_a_edicao$
+DECLARE
+  v_col text;
+BEGIN
+  FOREACH v_col IN ARRAY ARRAY[
+    'editado_por', 'editado_em', 'producao_devolvida_indice'
+  ]
+  LOOP
+    PERFORM pg_temp.checar('A', 'atividades.' || v_col || ' é NULLABLE',
+      EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'atividades'
+          AND column_name = v_col AND is_nullable = 'YES'
+      ),
+      'NOT NULL aqui quebraria quem sincroniza sem conhecer a coluna');
+  END LOOP;
+END $secao_a_edicao$;
 
 SELECT pg_temp.checar('A', 'tabela push_subscriptions existe',
   to_regclass('public.push_subscriptions') IS NOT NULL);
@@ -227,7 +255,13 @@ BEGIN
     'public.salvar_push_subscription(text,text,text)',
     'public.listar_relatorios_painel(date,date,text,text,integer)',
     'public.sincronizar_relatorio_rdo(jsonb)',
-    'public.salvar_descricao_tarifa(uuid,text,text,text,numeric,boolean)'
+    'public.salvar_descricao_tarifa(uuid,text,text,text,numeric,boolean)',
+    'public.editar_atividade_rdo(uuid,text,text,text,text,text,numeric,numeric,numeric,numeric,numeric,numeric,text)',
+    -- O overload de 3 parâmetros é o da devolução individual (17/09). O de 2
+    -- continua na lista acima de propósito: ele não foi substituído, virou um
+    -- atalho que chama o de 3 com índice nulo. Se um dia alguém "limpar" o de
+    -- 2 parâmetros, o Painel publicado para de conseguir devolver.
+    'public.devolver_atividade_rdo(uuid,text,integer)'
   ]
   LOOP
     PERFORM pg_temp.checar('B', 'função existe: ' || v_f, pg_temp.existe_funcao(v_f));
@@ -249,7 +283,9 @@ BEGIN
     'public.listar_cadastros_admin()',
     'public.listar_regras_admin()',
     'public.exige_mfa()',
-    'public.salvar_descricao_tarifa(uuid,text,text,text,numeric,boolean)'
+    'public.salvar_descricao_tarifa(uuid,text,text,text,numeric,boolean)',
+    'public.editar_atividade_rdo(uuid,text,text,text,text,text,numeric,numeric,numeric,numeric,numeric,numeric,text)',
+    'public.devolver_atividade_rdo(uuid,text,integer)'
   ]
   LOOP
     PERFORM pg_temp.checar('B', 'anon NÃO executa ' || v_f,
@@ -1036,6 +1072,219 @@ EXCEPTION WHEN OTHERS THEN
 END $secao_c_tarifa$;
 
 -- ============================================================================
+-- SEÇÃO C (continuação) — editar pelo painel + devolução individual (17/09)
+-- ============================================================================
+-- Dois pedidos do Fábio: (1) corrigir um apontamento direto no painel, sem
+-- devolver pro PWA por causa de um detalhe; (2) quando o apontamento tem
+-- várias produções (linha "irmã"), deixar claro QUAL delas foi apontada.
+--
+-- O índice da produção é um RETRATO, não um vínculo: atividade_maquinas é
+-- apagada e recriada inteira a cada sincronização, então não há id estável por
+-- máquina. Ele vale enquanto a atividade está 'devolvido' e é limpo no
+-- reenvio -- os testes abaixo fixam exatamente esse ciclo.
+DO $secao_c_edicao$
+DECLARE
+  v_uid   uuid;
+  v_rel   uuid := gen_random_uuid();
+  v_aid   uuid;
+  v_ret   jsonb;
+  v_st    text;
+  v_ed    timestamptz;
+  v_edpor uuid;
+  v_idx   integer;
+  v_mot   text;
+  v_comp  numeric;
+BEGIN
+  SELECT id INTO v_uid FROM auth.users ORDER BY created_at LIMIT 1;
+  IF v_uid IS NULL THEN
+    PERFORM pg_temp.pular('C', 'editar pelo painel + devolução individual', 'auth.users vazia');
+    RETURN;
+  END IF;
+
+  -- Duas máquinas de propósito: é o caso da "linha irmã", o que dá sentido ao
+  -- índice da produção devolvida.
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+  PERFORM sincronizar_relatorio_rdo(jsonb_build_object('uuid_dispositivo', v_rel,
+    'cliente','Colheita','contrato','ARAUCO','faena','TESTE EDICAO PAINEL','tipo_estrada','Acesso',
+    'equipe_frente','GTM','fazenda','Elo Dourado 2','data','2026-09-17','encarregado','Elson',
+    'supervisor','Valmir','tecnico_arauco','Edwilson','supervisor_arauco','Luciano','concluidoEm', now(),
+    'atividades', jsonb_build_array(jsonb_build_object('id', gen_random_uuid(),
+      'tipo_atividade','Construção de Aterro','comprimento_m',10,'largura_m',4,
+      'observacao','ORIGINAL',
+      'maquinas', jsonb_build_array(
+        jsonb_build_object('equipamento','ESH-18','operador','Leandro Félix',
+          'dados', jsonb_build_object('quantidade', 5)),
+        jsonb_build_object('equipamento','MN-16','operador','Silvanei Costa',
+          'dados', jsonb_build_object('quantidade', 8))
+      )))));
+  SELECT a.id INTO v_aid
+    FROM atividades a JOIN relatorios r ON r.id = a.relatorio_id
+   WHERE r.uuid_dispositivo = v_rel;
+
+  -- --- editar_atividade_rdo é ação de painel: sem 2FA não passa ---
+  BEGIN
+    PERFORM editar_atividade_rdo(v_aid, 'Construção de Aterro', NULL, NULL, NULL, NULL,
+                                 NULL, 11, 4, NULL, NULL, NULL, 'ORIGINAL');
+    PERFORM pg_temp.checar('C', 'editar sem 2FA é recusado', false,
+      'passou -- exige_mfa() não está barrando a edição pelo painel');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'editar sem 2FA é recusado', true, SQLERRM);
+  END;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+
+  -- --- tipo de atividade é o mínimo: sem ele o apontamento não identifica nada ---
+  BEGIN
+    PERFORM editar_atividade_rdo(v_aid, '   ', NULL, NULL, NULL, NULL,
+                                 NULL, 11, 4, NULL, NULL, NULL, 'ORIGINAL');
+    PERFORM pg_temp.checar('C', 'editar sem tipo de atividade é recusado', false, 'passou');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'editar sem tipo de atividade é recusado',
+      SQLERRM ILIKE '%obrigat%', SQLERRM);
+  END;
+
+  -- --- salvar SEM mudar nada não carimba "editado no painel" ---
+  -- O selo avisa o revisor seguinte que os números não são mais os que o campo
+  -- mandou. Se abrir o formulário, olhar e salvar já carimbasse, o selo
+  -- apareceria em apontamento intocado -- e selo que aparece à toa deixa de ser
+  -- lido quando aparece de verdade.
+  --
+  -- Testado pela AUSÊNCIA do carimbo, não comparando dois timestamps: `now()`
+  -- devolve o mesmo valor durante toda a transação, então "antes == depois"
+  -- seria verdade mesmo se a função regravasse a cada chamada. A primeira
+  -- versão deste teste caiu nessa e passou verde com a função sabotada.
+  -- A atividade acabou de ser criada, então editado_em é NULL aqui; os
+  -- parâmetros abaixo repetem exatamente o que ela já tem.
+  PERFORM editar_atividade_rdo(v_aid, 'Construção de Aterro', NULL, NULL, NULL, NULL,
+                               NULL, 10, 4, NULL, NULL, NULL, 'ORIGINAL');
+  SELECT editado_em INTO v_ed FROM atividades WHERE id = v_aid;
+  PERFORM pg_temp.checar('C', 'salvar sem mudar nada NÃO carimba a edição',
+    v_ed IS NULL,
+    'editado_em foi gravado numa edição que não alterou dado nenhum');
+
+  -- --- caminho feliz: pendente continua pendente, e fica o carimbo de quem editou ---
+  v_ret := editar_atividade_rdo(v_aid, 'Construção de Aterro', NULL, NULL, NULL, NULL,
+                                NULL, 12, 4, NULL, NULL, NULL, 'EDITADO PELO PAINEL');
+  SELECT status_revisao, editado_em, editado_por, comprimento_m, observacao
+    INTO v_st, v_ed, v_edpor, v_comp, v_mot
+    FROM atividades WHERE id = v_aid;
+  PERFORM pg_temp.checar('C', 'editar grava o valor novo',
+    v_comp = 12 AND v_mot = 'EDITADO PELO PAINEL',
+    'comprimento=' || coalesce(v_comp::text,'NULL') || ' obs=' || coalesce(v_mot,'NULL'));
+  PERFORM pg_temp.checar('C', 'editar carimba editado_por/editado_em',
+    v_ed IS NOT NULL AND v_edpor = v_uid);
+  PERFORM pg_temp.checar('C', 'editar um pendente não muda o status',
+    v_st = 'pendente', 'status = ' || coalesce(v_st,'NULL'));
+  PERFORM pg_temp.checar('C', 'editar um pendente não diz que voltou pra pendente',
+    (v_ret->>'voltou_pendente')::boolean = false, v_ret::text);
+
+  -- --- validado + edição que NÃO muda nada => segue validado (sem falso alarme) ---
+  PERFORM validar_atividade_rdo(v_aid);
+  v_ret := editar_atividade_rdo(v_aid, 'Construção de Aterro', NULL, NULL, NULL, NULL,
+                                NULL, 12, 4, NULL, NULL, NULL, 'EDITADO PELO PAINEL');
+  SELECT status_revisao INTO v_st FROM atividades WHERE id = v_aid;
+  PERFORM pg_temp.checar('C', 'editar validado SEM mudar nada mantém validado',
+    v_st = 'validado', 'status = ' || coalesce(v_st,'NULL'));
+  PERFORM pg_temp.checar('C', 'e a resposta não diz que voltou pra pendente',
+    (v_ret->>'voltou_pendente')::boolean = false, v_ret::text);
+
+  -- --- validado + mudança de verdade => volta pra pendente ---
+  -- Mesmo princípio do furo "validado que muda sozinho" (C9): não faz sentido
+  -- seguir aprovado com número diferente do que foi aprovado -- e vale também
+  -- quando a mudança vem do próprio painel, não só do reenvio do campo.
+  v_ret := editar_atividade_rdo(v_aid, 'Construção de Aterro', NULL, NULL, NULL, NULL,
+                                NULL, 99, 4, NULL, NULL, NULL, 'EDITADO PELO PAINEL');
+  SELECT status_revisao INTO v_st FROM atividades WHERE id = v_aid;
+  PERFORM pg_temp.checar('C', 'editar validado MUDANDO medida volta pra pendente',
+    v_st = 'pendente', 'status = ' || coalesce(v_st,'NULL'));
+  PERFORM pg_temp.checar('C', 'e a resposta avisa que voltou pra pendente',
+    (v_ret->>'voltou_pendente')::boolean = true, v_ret::text);
+
+  -- --- devolução individual: guarda QUAL produção foi apontada ---
+  PERFORM devolver_atividade_rdo(v_aid, 'A segunda máquina está com quantidade errada', 1);
+  SELECT status_revisao, producao_devolvida_indice, motivo_devolucao
+    INTO v_st, v_idx, v_mot FROM atividades WHERE id = v_aid;
+  PERFORM pg_temp.checar('C', 'devolver com índice grava qual produção foi apontada',
+    v_st = 'devolvido' AND v_idx = 1,
+    'status=' || coalesce(v_st,'NULL') || ' indice=' || coalesce(v_idx::text,'NULL'));
+
+  -- --- o painel precisa receber o índice, senão não desenha a distinção ---
+  PERFORM pg_temp.checar('C', 'listar_relatorios_painel devolve producao_devolvida_indice',
+    EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(listar_relatorios_painel(NULL, NULL, NULL, NULL, 200)) rel,
+           jsonb_array_elements(rel->'atividades') ativ
+      WHERE (ativ->>'id')::uuid = v_aid
+        AND (ativ->>'producao_devolvida_indice')::int = 1
+    ));
+  PERFORM pg_temp.checar('C', 'listar_relatorios_painel devolve editado_em/editado_por',
+    EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(listar_relatorios_painel(NULL, NULL, NULL, NULL, 200)) rel,
+           jsonb_array_elements(rel->'atividades') ativ
+      WHERE (ativ->>'id')::uuid = v_aid
+        AND ativ->>'editado_em' IS NOT NULL
+        AND ativ->>'editado_por' IS NOT NULL
+    ));
+
+  -- --- devolvido está em trânsito com o campo: o painel não edita por cima ---
+  BEGIN
+    PERFORM editar_atividade_rdo(v_aid, 'Construção de Aterro', NULL, NULL, NULL, NULL,
+                                 NULL, 50, 4, NULL, NULL, NULL, 'NAO DEVERIA ENTRAR');
+    PERFORM pg_temp.checar('C', 'editar um DEVOLVIDO é recusado', false,
+      'passou -- o painel sobrescreveria o que o encarregado está corrigindo');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'editar um DEVOLVIDO é recusado', true, SQLERRM);
+  END;
+
+  -- --- a trava de alternância continua valendo com o overload novo ---
+  BEGIN
+    PERFORM devolver_atividade_rdo(v_aid, 'Outra devolução seguida', 0);
+    PERFORM pg_temp.checar('C', 'devolver DUAS VEZES seguidas é recusado (com índice)', false,
+      'passou -- geraria outro push pro mesmo pedido');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'devolver DUAS VEZES seguidas é recusado (com índice)', true, SQLERRM);
+  END;
+
+  -- --- o reenvio do campo apaga o retrato, no mesmo instante em que ele
+  --     deixa de ser verdade ---
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+  PERFORM sincronizar_relatorio_rdo(jsonb_build_object('uuid_dispositivo', v_rel,
+    'cliente','Colheita','contrato','ARAUCO','faena','TESTE EDICAO PAINEL','tipo_estrada','Acesso',
+    'equipe_frente','GTM','fazenda','Elo Dourado 2','data','2026-09-17','encarregado','Elson',
+    'supervisor','Valmir','tecnico_arauco','Edwilson','supervisor_arauco','Luciano','concluidoEm', now(),
+    'atividades', jsonb_build_array(jsonb_build_object(
+      'id', (SELECT uuid_atividade_dispositivo FROM atividades WHERE id = v_aid),
+      'tipo_atividade','Construção de Aterro','comprimento_m',10,'largura_m',4,
+      'observacao','CORRIGIDO NO CAMPO'))));
+  SELECT status_revisao, producao_devolvida_indice, motivo_devolucao
+    INTO v_st, v_idx, v_mot FROM atividades WHERE id = v_aid;
+  PERFORM pg_temp.checar('C', 'reenvio limpa o índice da produção devolvida',
+    v_idx IS NULL, 'índice = ' || coalesce(v_idx::text,'NULL'));
+  PERFORM pg_temp.checar('C', 'reenvio também limpa o motivo e volta pra pendente',
+    v_st = 'pendente' AND v_mot IS NULL,
+    'status=' || coalesce(v_st,'NULL') || ' motivo=' || coalesce(v_mot,'NULL'));
+
+  -- --- REGRESSÃO do overload de 2 parâmetros: é o que o Painel publicado usa ---
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+  PERFORM devolver_atividade_rdo(v_aid, 'Devolução sem apontar produção');
+  SELECT status_revisao, producao_devolvida_indice INTO v_st, v_idx
+    FROM atividades WHERE id = v_aid;
+  PERFORM pg_temp.checar('C', 'devolver com 2 parâmetros continua funcionando',
+    v_st = 'devolvido', 'status = ' || coalesce(v_st,'NULL'));
+  PERFORM pg_temp.checar('C', 'e deixa o índice nulo (devolução do apontamento inteiro)',
+    v_idx IS NULL, 'índice = ' || coalesce(v_idx::text,'NULL'));
+
+  PERFORM set_config('request.jwt.claims', '', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.checar('C', 'editar pelo painel + devolução individual', false, SQLERRM);
+END $secao_c_edicao$;
+
+-- ============================================================================
 -- SEÇÃO D — regressão: o que já funcionava tem que continuar funcionando
 -- ============================================================================
 -- É a parte que responde ao "garanta que nenhum passo quebre o anterior".
@@ -1286,6 +1535,103 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   PERFORM pg_temp.checar('D','sincronização sem o campo dimensão', false, SQLERRM);
 END $secao_d5$;
+
+-- ----------------------------------------------------------------------------
+-- D — o que a leva de 17/09 (edição pelo painel) podia ter derrubado
+-- ----------------------------------------------------------------------------
+-- editar_atividade_e_devolucao_individual.sql REDEFINIU por cópia duas funções
+-- que já estavam em produção: sincronizar_relatorio_rdo e
+-- listar_relatorios_painel. Cópia é o jeito mais fácil de reverter uma
+-- melhoria sem perceber -- CREATE OR REPLACE não reclama de nada. Os testes
+-- abaixo cobram o que o Painel e o PWA publicados dependem dessas duas.
+
+-- O Histórico do Painel desenha uma linha por PRODUÇÃO. Se a chave `producoes`
+-- sumisse do retorno, a tela ficaria vazia sem erro nenhum no console.
+DO $secao_d6$
+DECLARE
+  v_chave text;
+BEGIN
+  FOREACH v_chave IN ARRAY ARRAY[
+    'producoes', 'numero', 'status_revisao', 'motivo_devolucao', 'excluido_em',
+    'status_anterior_exclusao', 'descricao_atividade', 'codigo_tarifa',
+    'unidade_tarifa', 'dimensao_m', 'equipamentos', 'maquinas', 'fotos',
+    'producao_devolvida_indice', 'editado_em', 'editado_por'
+  ]
+  LOOP
+    PERFORM pg_temp.checar('D',
+      'listar_relatorios_painel ainda monta a chave "' || v_chave || '"',
+      (SELECT prosrc LIKE '%''' || v_chave || '''%'
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname = 'listar_relatorios_painel'),
+      'a cópia de 17/09 pode ter deixado essa chave de fora');
+  END LOOP;
+END $secao_d6$;
+
+-- "Enviou, acabou": atividade que não está devolvida não é alterada por um
+-- reenvio, e o número dela volta na resposta de qualquer jeito (o operador
+-- precisa dele para citar o apontamento). A cópia de 17/09 mexeu justamente
+-- no ramo que decide isso.
+DO $secao_d7$
+DECLARE
+  v_uid    uuid;
+  v_rel    uuid := gen_random_uuid();
+  v_adisp  uuid := gen_random_uuid();
+  v_ret    jsonb;
+  v_obs    text;
+BEGIN
+  SELECT id INTO v_uid FROM auth.users ORDER BY created_at LIMIT 1;
+  IF v_uid IS NULL THEN
+    PERFORM pg_temp.pular('D', 'reenvio não mexe em apontamento congelado', 'auth.users vazia');
+    RETURN;
+  END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+
+  PERFORM sincronizar_relatorio_rdo(jsonb_build_object('uuid_dispositivo', v_rel,
+    'cliente','Colheita','contrato','ARAUCO','faena','TESTE CONGELADA 17/09','tipo_estrada','Acesso',
+    'equipe_frente','GTM','fazenda','Elo Dourado 2','data','2026-09-17','encarregado','Elson',
+    'supervisor','Valmir','tecnico_arauco','Edwilson','supervisor_arauco','Luciano','concluidoEm', now(),
+    'atividades', jsonb_build_array(jsonb_build_object('id', v_adisp,
+      'tipo_atividade','Construção de Aterro','observacao','PRIMEIRO ENVIO',
+      'comprimento_m',10,'largura_m',4))));
+
+  -- Segundo envio com observação diferente: como está 'pendente' (não
+  -- devolvida), nada pode mudar.
+  v_ret := sincronizar_relatorio_rdo(jsonb_build_object('uuid_dispositivo', v_rel,
+    'cliente','Colheita','contrato','ARAUCO','faena','TESTE CONGELADA 17/09','tipo_estrada','Acesso',
+    'equipe_frente','GTM','fazenda','Elo Dourado 2','data','2026-09-17','encarregado','Elson',
+    'supervisor','Valmir','tecnico_arauco','Edwilson','supervisor_arauco','Luciano','concluidoEm', now(),
+    'atividades', jsonb_build_array(jsonb_build_object('id', v_adisp,
+      'tipo_atividade','Construção de Aterro','observacao','TENTATIVA DE SOBRESCREVER',
+      'comprimento_m',777,'largura_m',4))));
+
+  SELECT observacao INTO v_obs FROM atividades WHERE uuid_atividade_dispositivo = v_adisp;
+  PERFORM pg_temp.checar('D', 'reenvio NÃO altera apontamento que não foi devolvido',
+    v_obs = 'PRIMEIRO ENVIO', 'observação virou: ' || coalesce(v_obs,'NULL'));
+  PERFORM pg_temp.checar('D', 'e o reenvio conta a atividade como congelada',
+    (v_ret->>'congeladas')::int = 1, 'congeladas = ' || coalesce(v_ret->>'congeladas','NULL'));
+  PERFORM pg_temp.checar('D', 'o número do apontamento volta mesmo estando congelado',
+    (v_ret->'numeros'->>(v_adisp::text)) IS NOT NULL,
+    'sem o número o operador não tem como citar o apontamento');
+
+  PERFORM set_config('request.jwt.claims','',true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.checar('D','reenvio não mexe em apontamento congelado', false, SQLERRM);
+END $secao_d7$;
+
+-- Invariante que a checagem de editar_atividade_rdo se apoia sem dizer: ela
+-- barra pelo STATUS ('pendente'/'validado'), não por excluido_em. Isso só é
+-- suficiente porque, no fluxo de hoje, atividade removida está sempre
+-- 'devolvido' -- a marcação de exclusão só acontece nesse ramo, e o reenvio
+-- limpa excluido_em junto. Se algum dia passar a existir removida com status
+-- 'pendente', o painel voltaria a poder editá-la: este teste é o alarme.
+SELECT pg_temp.checar('D', 'removida implica devolvida (invariante que protege a edição)',
+  NOT EXISTS (
+    SELECT 1 FROM atividades
+     WHERE excluido_em IS NOT NULL AND status_revisao <> 'devolvido'
+  ),
+  'há atividade removida fora de "devolvido" -- editar_atividade_rdo passaria a aceitá-la');
 
 -- ============================================================================
 -- RESULTADO
