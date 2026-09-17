@@ -340,6 +340,29 @@
   .maquina-detalhada-card input:focus, .maquina-detalhada-card textarea:focus{outline:none; border-color:var(--brand);}
   .maquina-detalhada-card input::placeholder, .maquina-detalhada-card textarea::placeholder{color:var(--text-dim);}
 
+  /* Card de produção travada -- é a que NÃO foi a apontada na devolução.
+     Fica visível (não escondida), só leitura: o pedido do Fábio foi impedir
+     que o operador corrija a produção errada por engano, sem esconder o
+     que já foi lançado nela. */
+  .maquina-card-travada{opacity:.72;}
+  .maquina-travada-aviso{
+    display:flex; align-items:center; gap:6px; font-size:12px; font-weight:600; color:var(--danger);
+    background:var(--danger-bg); border:1px solid var(--danger); border-radius:var(--radius-sm);
+    padding:7px 10px; margin-bottom:9px;
+  }
+  .maquina-travada-aviso svg{width:14px; height:14px; flex-shrink:0;}
+  .fake-select-travado{
+    display:flex; align-items:center; padding:12px 13px; border-radius:var(--radius-sm);
+    border:1px solid var(--border); background:var(--surface-3); color:var(--text-dim); font-size:14.5px;
+  }
+  .maquina-card-travada input:disabled,
+  .maquina-detalhada-card.maquina-card-travada .campo-solo:disabled,
+  .maquina-detalhada-card.maquina-card-travada .campo-numerico-solo:disabled,
+  .maquina-detalhada-card.maquina-card-travada .campo-texto-solo:disabled,
+  .maquina-card-travada textarea:disabled{
+    background:var(--surface-3); color:var(--text-dim); cursor:default;
+  }
+
   /* ---------- Fotos de evidência ---------- */
   .foto-grid{display:flex; flex-wrap:wrap; gap:9px; margin-bottom:8px;}
   .foto-thumb{width:76px; height:76px; border-radius:10px; overflow:hidden; position:relative;
@@ -2539,6 +2562,24 @@
     return !!(a && a.enviadaEm);
   }
 
+  // Máquinas criadas antes desta mudança (17/09) não têm id -- e sem ele o
+  // servidor não tem como reconhecer a MESMA máquina entre duas
+  // sincronizações (upsert por uuid_maquina_dispositivo), nem o painel tem
+  // como apontar UMA produção específica numa devolução. Roda uma vez por
+  // carregamento; depois da primeira vez toda máquina já nasce com id (ver
+  // os dois "Adicionar" mais abaixo) e esta função vira um no-op.
+  function garantirIdsDeMaquinas(){
+    (App.relatorios || []).forEach(function(r){
+      var mudou = false;
+      (r.atividades || []).forEach(function(a){
+        (a.maquinas || []).forEach(function(m){
+          if (!m.id){ m.id = uid(); mudou = true; }
+        });
+      });
+      if (mudou) persistir(r);
+    });
+  }
+
   // Como o operador se refere a um apontamento ao pedir a devolução.
   //
   // Sem isto, a mensagem de bloqueio mandava "peça a devolução" sem dizer O
@@ -2797,7 +2838,14 @@
               observacao: m.observacao
             };
           }
-          return { equipamento: m.equipamento, operador: m.operador, dados: dados };
+          // id: o uuid de dispositivo da máquina (ver garantirIdsDeMaquinas e
+          // os dois "Adicionar" acima) -- é o que deixa o servidor reconhecer
+          // a MESMA máquina entre duas sincronizações, em vez de apagar e
+          // recriar tudo. Fallback pra quem migrou de uma versão antes desta
+          // mudança e por algum motivo escapou da migração retroativa: sem
+          // id nenhum, o servidor mesmo assim aceita (gera um por conta
+          // própria), só não ganha a identidade estável até a próxima vez.
+          return { id: m.id || uid(), equipamento: m.equipamento, operador: m.operador, dados: dados };
         });
         return {
           id: a.id,
@@ -2910,6 +2958,26 @@
     var a = atividadeEmEdicao();
     if (!a) return "";
     var r = relatorioAtual();
+
+    // Pedido do Fábio (17/09, mesmo dia da devolução individual): "para
+    // tratar, trata individual pelo painel; para devolver, devolve o bloco,
+    // mas... ao entrar no apontamento, o usuário tem os campos de todas as
+    // produções livres para editar, e isso pode fazer com que o usuário
+    // acabe fazendo a correção na produção errada." Sem isto, o painel podia
+    // apontar a máquina certa (producao_devolvida_maquina_uuid), mas o PWA
+    // reabria a atividade inteira com TODAS as máquinas editáveis -- o
+    // encarregado tinha de adivinhar, lendo o motivo, qual delas mexer.
+    //
+    // devolucao vem SEMPRE do que verificar_atividades_devolvidas trouxe do
+    // servidor -- nunca de um palpite do aparelho sobre o próprio estado.
+    var devolucao = devolucaoDaAtividade(a);
+    var maquinaUuidApontada = devolucao ? devolucao.producao_devolvida_maquina_uuid : null;
+    // Sem uuid apontado (devolução do apontamento inteiro, ou dado antigo sem
+    // a coluna), NADA fica travado -- é exatamente o comportamento de antes.
+    function maquinaTravada(m){
+      return !!(maquinaUuidApontada && m.id !== maquinaUuidApontada);
+    }
+
     var html = '<div class="container">';
     html += '<div class="field"><label>Tipo de atividade <span class="req">*</span></label>'+
       '<div class="fake-select" id="sel-tipo-ativ"><span class="'+(a.tipo_atividade?"val":"placeholder")+'">'+
@@ -2942,6 +3010,27 @@
       // tarifas são diferentes de verdade, viram apontamentos separados.
       html += '<p class="helper-text" style="margin-top:0">Todas usam a tarifa escolhida acima. Cada máquina tem sua própria hora inicial e final.</p>';
       (a.maquinas||[]).forEach(function(m, idx){
+        var travada = maquinaTravada(m);
+        if (travada){
+          // Campos travados: mesma classe .campo-numerico nos inputs (só
+          // ganham `disabled`), mas o "fake-select" vira um span comum --
+          // não tem como desabilitar um <div> clicável, então ele nem entra
+          // na página com a classe que a fiação escuta.
+          html += '<div class="maquina-card maquina-card-travada">'+
+            '<div class="maquina-travada-aviso">'+alertIcon()+' Não foi esta máquina que o painel apontou -- edição travada.</div>'+
+            '<div class="row-2">'+
+              rotulado("Equipamento", '<div class="fake-select-travado"><span class="val">'+esc(m.equipamento||"—")+'</span></div>')+
+              rotulado("Operador", '<div class="fake-select-travado"><span class="val">'+esc(m.operador||"—")+'</span></div>')+
+            '</div>'+
+            '<div class="row-2">'+
+              rotulado("Hora inicial",
+                '<input type="text" class="campo-numerico" disabled value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">')+
+              rotulado("Hora final",
+                '<input type="text" class="campo-numerico" disabled value="'+escAttr(m.hora_final==null?"":formatarNumeroExibicao(m.hora_final))+'">')+
+            '</div>'+
+          '</div>';
+          return;
+        }
         html += '<div class="maquina-card">'+
           '<div class="row-2">'+
             rotulado("Equipamento",
@@ -2974,6 +3063,39 @@
       // Aqui também a descrição saiu do card: é uma só, do apontamento.
       html += '<p class="helper-text" style="margin-top:0">Todos usam a tarifa escolhida acima, cada um com sua própria produção. Pode repetir o mesmo código com dados diferentes.</p>';
       (a.maquinas||[]).forEach(function(m, idx){
+        var travadaMd = maquinaTravada(m);
+        if (travadaMd){
+          html += '<div class="maquina-detalhada-card maquina-card-travada">'+
+            '<div class="maquina-travada-aviso">'+alertIcon()+' Não foi este equipamento que o painel apontou -- edição travada.</div>'+
+            '<div class="row-2">'+
+              rotulado("Equipamento", '<div class="fake-select-travado"><span class="val">'+esc(m.equipamento||"—")+'</span></div>')+
+              rotulado("Operador", '<div class="fake-select-travado"><span class="val">'+esc(m.operador||"—")+'</span></div>')+
+            '</div>'+
+            campoSeVisivel(a.descricao_atividade, "up", rotulado(phDinamico(clienteAtual,a.tipo_atividade,"up","UP (Talhão)"),
+              '<input class="campo-solo campo-texto-solo" type="text" disabled value="'+escAttr(m.up||"")+'">'))+
+            campoSeVisivel(a.descricao_atividade, "trecho", rotulado(phDinamico(clienteAtual,a.tipo_atividade,"trecho","Trecho"),
+              '<input class="campo-solo campo-texto-solo" type="text" disabled value="'+escAttr(m.trecho||"")+'">'))+
+            campoSeVisivel(a.descricao_atividade, "quantidade", rotulado(phDinamico(clienteAtual,a.tipo_atividade,"quantidade","Quantidade"),
+              '<input class="campo-solo campo-numerico-solo" type="text" disabled value="'+escAttr(m.quantidade==null?"":formatarNumeroExibicao(m.quantidade))+'">'))+
+            '<div class="row-2">'+
+              campoSeVisivel(a.descricao_atividade, "comprimento_m", rotulado(phDinamico(clienteAtual,a.tipo_atividade,"comprimento_m","Comprimento (m)"),
+                '<input class="campo-numerico-solo" type="text" disabled value="'+escAttr(m.comprimento_m==null?"":formatarNumeroExibicao(m.comprimento_m))+'">'))+
+              campoSeVisivel(a.descricao_atividade, "largura_m", rotulado(phDinamico(clienteAtual,a.tipo_atividade,"largura_m","Largura (m)"),
+                '<input class="campo-numerico-solo" type="text" disabled value="'+escAttr(m.largura_m==null?"":formatarNumeroExibicao(m.largura_m))+'">'))+
+            '</div>'+
+            campoSeVisivel(a.descricao_atividade, "profundidade_cm", rotulado(phDinamico(clienteAtual,a.tipo_atividade,"profundidade_cm","Profundidade (cm)"),
+              '<input class="campo-solo campo-numerico-solo" type="text" disabled value="'+escAttr(m.profundidade_cm==null?"":formatarNumeroExibicao(m.profundidade_cm))+'">'))+
+            '<div class="row-2">'+
+              rotulado(phDinamico(clienteAtual,a.tipo_atividade,"hora_inicial","H. inicial"),
+                '<input class="campo-numerico-solo" type="text" disabled value="'+escAttr(m.hora_inicial==null?"":formatarNumeroExibicao(m.hora_inicial))+'">')+
+              rotulado(phDinamico(clienteAtual,a.tipo_atividade,"hora_final","H. final"),
+                '<input class="campo-numerico-solo" type="text" disabled value="'+escAttr(m.hora_final==null?"":formatarNumeroExibicao(m.hora_final))+'">')+
+            '</div>'+
+            rotulado(phDinamico(clienteAtual,a.tipo_atividade,"observacao","Observação"),
+              '<textarea class="campo-solo campo-texto-solo" disabled>'+esc(m.observacao||"")+'</textarea>')+
+          '</div>';
+          return;
+        }
         html += '<div class="maquina-detalhada-card">'+
           '<div class="row-2">'+
             rotulado("Equipamento",
@@ -3158,7 +3280,11 @@
     var btnAddMaquina = document.getElementById("btn-add-maquina");
     if (btnAddMaquina) btnAddMaquina.onclick = function(){
       a.maquinas = a.maquinas || [];
-      a.maquinas.push({ equipamento:"", operador:"", hora_inicial:null, hora_final:null });
+      // id: identidade da máquina que sobrevive a uma sincronização (o
+      // servidor faz upsert por ela). É o que permite o painel apontar UMA
+      // produção específica na devolução, e este app travar a edição das
+      // outras -- sem id nenhuma das duas coisas seria possível de verdade.
+      a.maquinas.push({ id: uid(), equipamento:"", operador:"", hora_inicial:null, hora_final:null });
       render();
     };
     document.querySelectorAll('.maquina-card .fake-select[data-campo="equipamento"]').forEach(function(sel){
@@ -3195,7 +3321,9 @@
     var btnAddMaquinaDetalhada = document.getElementById("btn-add-maquina-detalhada");
     if (btnAddMaquinaDetalhada) btnAddMaquinaDetalhada.onclick = function(){
       a.maquinas = a.maquinas || [];
-      a.maquinas.push({ equipamento:"", operador:"", up:"", trecho:"", quantidade:null, observacao:"" });
+      // id: mesma identidade estável do formulário de Hora Máquina (ver o
+      // comentário lá) -- os dois formulários listam máquinas do mesmo jeito.
+      a.maquinas.push({ id: uid(), equipamento:"", operador:"", up:"", trecho:"", quantidade:null, observacao:"" });
       render();
     };
     document.querySelectorAll('.maquina-detalhada-card .fake-select[data-campo="equipamento"]').forEach(function(sel){
@@ -3419,6 +3547,9 @@
       // têm `enviadaEm` nas atividades, e sem essa marcação a trava de edição
       // não valeria justamente para o que já está no aparelho.
       marcarEnviadasRetroativo();
+      // Mesma lógica, pra identidade de máquina: sem isso, RDOs em andamento
+      // no aparelho ficariam sem id até alguém adicionar uma máquina nova.
+      garantirIdsDeMaquinas();
       render();
       if (navigator.onLine) tentarSincronizarTodosPendentes();
     });

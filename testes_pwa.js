@@ -1493,6 +1493,118 @@ checar("Padrão e Máquinas Detalhado têm campos escondíveis no Painel",
   /maquinas_detalhado:\s*\[[^\]]*"Profundidade"/.test(htmlPainel),
   "a lista de campos escondíveis não cobre os dois formulários");
 
+// ---------------------------------------------------------------------------
+// Identidade estável por máquina + trava de edição na produção não apontada
+// (17/09) -- pedido do Fábio: reabrindo um apontamento com mais de uma
+// máquina/produção devolvido, só a que o painel apontou pode ser corrigida.
+// Sem um id que sobrevive à sincronização (uuid_maquina_dispositivo, espelho
+// do que já existe para a atividade), não haveria como o servidor apontar
+// UMA produção nem como este app saber qual travar.
+// ---------------------------------------------------------------------------
+console.log("\n--- id estável por máquina (17/09) ---\n");
+
+const fonteLigarEventos = corpoDaFuncao("ligarEventosAtividade");
+const pushesComId = (fonteLigarEventos.match(/a\.maquinas\.push\(\{\s*id:\s*uid\(\)/g) || []).length;
+checar("as duas máquinas novas (Hora Máquina e Máquinas Detalhado) nascem com id estável",
+  pushesComId === 2,
+  "esperava 2 pontos de criação com id:uid(), achei " + pushesComId);
+
+const fontePayloadMaquinas = corpoDaFuncao("construirPayloadRelatorio");
+checar("o payload de sincronização manda o id de cada máquina",
+  /id:\s*m\.id\s*\|\|\s*uid\(\)/.test(fontePayloadMaquinas),
+  "sem id no payload, o servidor não reconhece a MESMA máquina entre duas sincronizações (upsert)");
+
+const fonteGarantirIds = corpoDaFuncao("garantirIdsDeMaquinas");
+checar("garantirIdsDeMaquinas() só atribui id a quem não tem, e só persiste quando algo mudou",
+  /if\s*\(!m\.id\)\{\s*m\.id\s*=\s*uid\(\);\s*mudou\s*=\s*true;\s*\}/.test(fonteGarantirIds) &&
+  /if\s*\(mudou\)\s*persistir\(r\)/.test(fonteGarantirIds),
+  "a migração retroativa gravaria toda vez (sem checar `mudou`) ou não daria id de verdade");
+
+checar("a migração retroativa roda ao carregar os relatórios salvos",
+  /garantirIdsDeMaquinas\(\);/.test(corpoDaFuncao("carregarRelatoriosSalvos")),
+  "sem a chamada, apontamentos antigos nunca ganham o id -- o painel nunca aponta produção neles");
+
+console.log("\n--- trava de edição na produção não apontada pela devolução (17/09) ---\n");
+
+const corpoTelaAtiv = corpoDaFuncao("renderTelaAtividade");
+
+checar("a trava lê o uuid da produção devolvida a partir da PRÓPRIA atividade sendo editada",
+  /var\s+devolucao\s*=\s*devolucaoDaAtividade\(a\)/.test(corpoTelaAtiv) &&
+  /maquinaUuidApontada\s*=\s*devolucao\s*\?\s*devolucao\.producao_devolvida_maquina_uuid\s*:\s*null/.test(corpoTelaAtiv),
+  "sem isso a trava não sabe qual produção foi apontada, ou olharia a devolução errada");
+
+checar("maquinaTravada(m) só trava quando existe produção apontada E não é esta máquina",
+  /function maquinaTravada\(m\)\{\s*return\s*!!\(maquinaUuidApontada\s*&&\s*m\.id\s*!==\s*maquinaUuidApontada\)/.test(corpoTelaAtiv),
+  "sem maquinaUuidApontada (caso do formulário Padrão, que devolve o apontamento inteiro, e do apontamento nunca devolvido) nada pode travar");
+
+// Cada bloco do 'if/else if' desenha um formulário -- corta pelos mesmos
+// marcadores que decidem qual roda (mesma técnica já usada para a ordem da
+// descrição, ver "a descrição é desenhada antes..." acima).
+const iniHM = corpoTelaAtiv.indexOf('formulario === "hora_maquina"');
+const iniMD = corpoTelaAtiv.indexOf('formulario === "maquinas_detalhado"');
+const iniPadrao = corpoTelaAtiv.indexOf('a.tipo_atividade){', iniMD);
+const blocoHM = corpoTelaAtiv.slice(iniHM, iniMD);
+const blocoMD = corpoTelaAtiv.slice(iniMD, iniPadrao);
+const blocoPadrao = corpoTelaAtiv.slice(iniPadrao);
+
+function trechoAte(fonte, inicioTxt, fimTxt) {
+  const i = fonte.indexOf(inicioTxt);
+  const f = fonte.indexOf(fimTxt, i);
+  return (i === -1 || f === -1) ? "" : fonte.slice(i, f);
+}
+
+[
+  { nome: "Hora Máquina Trabalhada", bloco: blocoHM, marcador: "if (travada){", idxAttr: "data-maqidx", disabledEsperado: 2 },
+  { nome: "Máquinas Detalhado", bloco: blocoMD, marcador: "if (travadaMd){", idxAttr: "data-mdidx", disabledEsperado: 9 }
+].forEach(function (t) {
+  checar(t.nome + ": o card consulta maquinaTravada(m) antes de desenhar",
+    new RegExp("maquinaTravada\\(m\\)").test(t.bloco),
+    "o card não decide entre travado e editável");
+
+  const travado = trechoAte(t.bloco, t.marcador, "return;");
+  checar(t.nome + ": existe de fato um ramo de card travado",
+    travado !== "",
+    "não achei o bloco do card travado com o marcador " + t.marcador);
+
+  checar(t.nome + ": o card travado não expõe " + t.idxAttr + " nem data-action (a fiação não pode enxergá-lo)",
+    travado !== "" && !new RegExp(t.idxAttr).test(travado) && !/data-action/.test(travado),
+    "um card travado com esses atributos seria pego pela mesma fiação do card editável -- o clique editaria a produção errada");
+
+  checar(t.nome + ": os seletores do card travado usam fake-select-travado, não fake-select de verdade",
+    travado !== "" && /fake-select-travado/.test(travado) && !/class="fake-select"/.test(travado),
+    "com a classe fake-select de verdade, o clique abriria o seletor mesmo com o card travado");
+
+  // Conta só a TAG (input/textarea) com disabled -- não a palavra solta, que
+  // também aparece no comentário do código explicando a escolha.
+  const camposDisabled = (travado.match(/<(?:input|textarea)[^>]*\bdisabled\b/g) || []).length;
+  checar(t.nome + ": todos os campos do card travado nascem com disabled",
+    travado !== "" && camposDisabled === t.disabledEsperado,
+    "esperava " + t.disabledEsperado + " campo(s) com disabled, achei " + camposDisabled);
+
+  checar(t.nome + ": o card travado mostra o aviso de que não foi esta produção que o painel apontou",
+    /maquina-travada-aviso/.test(travado),
+    "sem aviso, o operador não entende por que os campos não respondem ao toque");
+
+  checar(t.nome + ": o card travado NÃO tem botão de remover",
+    !/data-action="rm-maquina/.test(travado),
+    "removeria a produção que o painel apontou para correção -- justamente a que não pode sumir");
+});
+
+// O formulário Padrão (obra) é o caso em que a trava não precisa fazer nada:
+// há uma produção só por atividade, e a devolução dela sempre chega com
+// maquina_uuid nulo (Painel/index.html: producoes.length===1 -> devolucaoSimples
+// com maquinaUuid null). maquinaUuidApontada fica null, e maquinaTravada(m) já
+// devolve false sozinho -- por isso o card de equipamento do Padrão não foi
+// tocado nesta mudança. Este teste prova que é ausência por CONSEQUÊNCIA da
+// mesma regra, não um "if" escrito à parte para pular o Padrão.
+checar("o formulário Padrão (obra) não ganhou um desvio próprio para a trava (seria hardcode desnecessário)",
+  !/maquinaTravada/.test(blocoPadrao),
+  "o Padrão tem lógica própria de trava -- a regra deixou de ser uniforme entre os três formulários");
+
+checar("existe CSS para o card travado e para o seletor travado",
+  /\.maquina-card-travada\{/.test(cssPwa) && /\.fake-select-travado\{/.test(cssPwa),
+  "a marcação usa classes sem estilo -- o card travado ficaria com a cara de um card quebrado");
+
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
 process.exit(erros ? 1 : 0);

@@ -112,6 +112,8 @@ BEGIN
     'atividades.editado_por',
     'atividades.editado_em',
     'atividades.producao_devolvida_indice',
+    'atividades.producao_devolvida_maquina_uuid',
+    'atividade_maquinas.uuid_maquina_dispositivo',
     'relatorios.criado_por'
   ]
   LOOP
@@ -125,19 +127,20 @@ BEGIN
   END LOOP;
 END $secao_a$;
 
--- As três colunas de 17/09 (edição pelo painel + retrato da produção devolvida)
+-- As colunas de 17/09 (edição pelo painel + retrato da produção devolvida)
 -- PRECISAM ser nullable, e isso não é detalhe: é a lição de 08/09, quando um
 -- ADD COLUMN ... NOT NULL derrubou a sincronização de quem estava em campo,
 -- porque a sincronizar_relatorio_rdo publicada não preenchia a coluna nova.
 -- Apontamento nunca editado tem editado_por/editado_em nulos, e devolução sem
--- produção específica tem índice nulo -- nulo aqui é o estado NORMAL, não falta
--- de dado.
+-- produção específica tem índice/uuid nulo -- nulo aqui é o estado NORMAL,
+-- não falta de dado. producao_devolvida_indice ficou pra trás (substituído
+-- pelo uuid, ver abaixo), mas continua nullable -- ninguém escreve nela mais.
 DO $secao_a_edicao$
 DECLARE
   v_col text;
 BEGIN
   FOREACH v_col IN ARRAY ARRAY[
-    'editado_por', 'editado_em', 'producao_devolvida_indice'
+    'editado_por', 'editado_em', 'producao_devolvida_indice', 'producao_devolvida_maquina_uuid'
   ]
   LOOP
     PERFORM pg_temp.checar('A', 'atividades.' || v_col || ' é NULLABLE',
@@ -149,6 +152,27 @@ BEGIN
       'NOT NULL aqui quebraria quem sincroniza sem conhecer a coluna');
   END LOOP;
 END $secao_a_edicao$;
+
+-- uuid_maquina_dispositivo é o oposto: PRECISA ser NOT NULL com DEFAULT
+-- gen_random_uuid() -- é o que dá a cada máquina uma identidade mesmo quando
+-- um app antigo não manda 'id' nenhum. NULL aqui destruiria a chave do
+-- upsert (ON CONFLICT não casa linha com uuid nulo, e o comportamento
+-- voltaria a ser apaga-e-recria sem ninguém perceber).
+SELECT pg_temp.checar('A', 'atividade_maquinas.uuid_maquina_dispositivo é NOT NULL com DEFAULT',
+  (SELECT attnotnull FROM pg_attribute
+    WHERE attrelid = 'atividade_maquinas'::regclass AND attname = 'uuid_maquina_dispositivo')
+  AND (SELECT column_default FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='atividade_maquinas'
+          AND column_name='uuid_maquina_dispositivo') = 'gen_random_uuid()');
+
+SELECT pg_temp.checar('A', 'nenhuma máquina sem uuid_maquina_dispositivo',
+  NOT EXISTS (SELECT 1 FROM atividade_maquinas WHERE uuid_maquina_dispositivo IS NULL));
+
+-- É o que faz o upsert (ON CONFLICT) da sincronização funcionar.
+SELECT pg_temp.checar('A', 'UNIQUE (atividade_id, uuid_maquina_dispositivo) existe',
+  EXISTS (SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'atividade_maquinas'::regclass
+            AND conname  = 'atividade_maquinas_atividade_uuid_disp_key'));
 
 SELECT pg_temp.checar('A', 'tabela push_subscriptions existe',
   to_regclass('public.push_subscriptions') IS NOT NULL);
@@ -257,11 +281,16 @@ BEGIN
     'public.sincronizar_relatorio_rdo(jsonb)',
     'public.salvar_descricao_tarifa(uuid,text,text,text,numeric,boolean)',
     'public.editar_atividade_rdo(uuid,text,text,text,text,text,numeric,numeric,numeric,numeric,numeric,numeric,text)',
-    -- O overload de 3 parâmetros é o da devolução individual (17/09). O de 2
-    -- continua na lista acima de propósito: ele não foi substituído, virou um
-    -- atalho que chama o de 3 com índice nulo. Se um dia alguém "limpar" o de
-    -- 2 parâmetros, o Painel publicado para de conseguir devolver.
-    'public.devolver_atividade_rdo(uuid,text,integer)'
+    -- O overload de 3 parâmetros por INTEIRO foi o primeiro rascunho da
+    -- devolução individual (17/09, mais cedo) -- superado ainda no mesmo dia
+    -- pelo de uuid (o índice não sobrevive a uma correção, ver o comentário
+    -- da seção C). Fica na lista de propósito: nada foi removido, e o de 2
+    -- parâmetros continua sendo o atalho que o Painel publicado usa quando
+    -- não aponta uma produção.
+    'public.devolver_atividade_rdo(uuid,text,integer)',
+    -- O overload por uuid da máquina é o que vale de verdade -- é o que o
+    -- Painel chama quando o revisor aponta uma produção específica.
+    'public.devolver_atividade_rdo(uuid,text,uuid)'
   ]
   LOOP
     PERFORM pg_temp.checar('B', 'função existe: ' || v_f, pg_temp.existe_funcao(v_f));
@@ -285,7 +314,8 @@ BEGIN
     'public.exige_mfa()',
     'public.salvar_descricao_tarifa(uuid,text,text,text,numeric,boolean)',
     'public.editar_atividade_rdo(uuid,text,text,text,text,text,numeric,numeric,numeric,numeric,numeric,numeric,text)',
-    'public.devolver_atividade_rdo(uuid,text,integer)'
+    'public.devolver_atividade_rdo(uuid,text,integer)',
+    'public.devolver_atividade_rdo(uuid,text,uuid)'
   ]
   LOOP
     PERFORM pg_temp.checar('B', 'anon NÃO executa ' || v_f,
@@ -1078,22 +1108,31 @@ END $secao_c_tarifa$;
 -- devolver pro PWA por causa de um detalhe; (2) quando o apontamento tem
 -- várias produções (linha "irmã"), deixar claro QUAL delas foi apontada.
 --
--- O índice da produção é um RETRATO, não um vínculo: atividade_maquinas é
--- apagada e recriada inteira a cada sincronização, então não há id estável por
--- máquina. Ele vale enquanto a atividade está 'devolvido' e é limpo no
--- reenvio -- os testes abaixo fixam exatamente esse ciclo.
+-- A devolução individual nasceu apontando um ÍNDICE (posição na lista) e foi
+-- CORRIGIDA ainda no mesmo dia: índice não sobrevive a nada, porque
+-- atividade_maquinas era apagada e recriada inteira a cada sincronização (id
+-- novo toda vez) -- ORDER BY m.id nem preservava a ordem que o operador
+-- cadastrou. A versão de verdade aponta pelo UUID DE DISPOSITIVO da máquina
+-- (uuid_maquina_dispositivo), que agora sobrevive a sincronizações porque
+-- sincronizar_relatorio_rdo faz upsert por esse uuid em vez de apaga-e-recria.
+-- O overload por índice (uuid,text,integer) fica no banco sem uso, testado
+-- à parte (seção B); os testes de comportamento abaixo já usam só o de uuid.
 DO $secao_c_edicao$
 DECLARE
-  v_uid   uuid;
-  v_rel   uuid := gen_random_uuid();
-  v_aid   uuid;
-  v_ret   jsonb;
-  v_st    text;
-  v_ed    timestamptz;
-  v_edpor uuid;
-  v_idx   integer;
-  v_mot   text;
-  v_comp  numeric;
+  v_uid    uuid;
+  v_rel    uuid := gen_random_uuid();
+  v_muid_a uuid := gen_random_uuid();
+  v_muid_b uuid := gen_random_uuid();
+  v_aid    uuid;
+  v_ret    jsonb;
+  v_st     text;
+  v_ed     timestamptz;
+  v_edpor  uuid;
+  v_mmuid  uuid;
+  v_mot    text;
+  v_comp   numeric;
+  v_id_maq1 uuid;
+  v_id_maq2 uuid;
 BEGIN
   SELECT id INTO v_uid FROM auth.users ORDER BY created_at LIMIT 1;
   IF v_uid IS NULL THEN
@@ -1101,8 +1140,8 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Duas máquinas de propósito: é o caso da "linha irmã", o que dá sentido ao
-  -- índice da produção devolvida.
+  -- Duas máquinas de propósito, cada uma com seu uuid de dispositivo -- é o
+  -- caso da "linha irmã", o que dá sentido a apontar UMA delas na devolução.
   PERFORM set_config('request.jwt.claims',
     jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
   PERFORM sincronizar_relatorio_rdo(jsonb_build_object('uuid_dispositivo', v_rel,
@@ -1113,14 +1152,15 @@ BEGIN
       'tipo_atividade','Construção de Aterro','comprimento_m',10,'largura_m',4,
       'observacao','ORIGINAL',
       'maquinas', jsonb_build_array(
-        jsonb_build_object('equipamento','ESH-18','operador','Leandro Félix',
+        jsonb_build_object('id', v_muid_a, 'equipamento','ESH-18','operador','Leandro Félix',
           'dados', jsonb_build_object('quantidade', 5)),
-        jsonb_build_object('equipamento','MN-16','operador','Silvanei Costa',
+        jsonb_build_object('id', v_muid_b, 'equipamento','MN-16','operador','Silvanei Costa',
           'dados', jsonb_build_object('quantidade', 8))
       )))));
   SELECT a.id INTO v_aid
     FROM atividades a JOIN relatorios r ON r.id = a.relatorio_id
    WHERE r.uuid_dispositivo = v_rel;
+  SELECT id INTO v_id_maq1 FROM atividade_maquinas WHERE atividade_id = v_aid AND uuid_maquina_dispositivo = v_muid_a;
 
   -- --- editar_atividade_rdo é ação de painel: sem 2FA não passa ---
   BEGIN
@@ -1202,23 +1242,57 @@ BEGIN
   PERFORM pg_temp.checar('C', 'e a resposta avisa que voltou pra pendente',
     (v_ret->>'voltou_pendente')::boolean = true, v_ret::text);
 
-  -- --- devolução individual: guarda QUAL produção foi apontada ---
-  PERFORM devolver_atividade_rdo(v_aid, 'A segunda máquina está com quantidade errada', 1);
-  SELECT status_revisao, producao_devolvida_indice, motivo_devolucao
-    INTO v_st, v_idx, v_mot FROM atividades WHERE id = v_aid;
-  PERFORM pg_temp.checar('C', 'devolver com índice grava qual produção foi apontada',
-    v_st = 'devolvido' AND v_idx = 1,
-    'status=' || coalesce(v_st,'NULL') || ' indice=' || coalesce(v_idx::text,'NULL'));
+  -- --- uuid de máquina que não pertence à atividade é recusado ---
+  -- Testado ANTES da primeira devolução de propósito: com a atividade já
+  -- 'pendente', é a validação de posse da máquina que tem de barrar -- feito
+  -- depois de já devolvida, quem barraria primeiro seria a trava de
+  -- alternância (também correta, mas não é o que este teste quer isolar).
+  -- Sem esta checagem, um id de OUTRA atividade (ou inventado) travaria a
+  -- edição errada no PWA sem ninguém perceber até o encarregado reclamar.
+  BEGIN
+    PERFORM devolver_atividade_rdo(p_atividade_id => v_aid,
+      p_motivo => 'nunca deveria funcionar', p_maquina_uuid => gen_random_uuid());
+    PERFORM pg_temp.checar('C', 'devolver com uuid de outra atividade é recusado', false, 'passou');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'devolver com uuid de outra atividade é recusado',
+      SQLERRM ILIKE '%não pertence%', SQLERRM);
+  END;
 
-  -- --- o painel precisa receber o índice, senão não desenha a distinção ---
-  PERFORM pg_temp.checar('C', 'listar_relatorios_painel devolve producao_devolvida_indice',
+  -- --- devolução individual: guarda QUAL produção foi apontada, pelo uuid ---
+  -- Chamada NOMEADA de propósito: é como o Supabase RPC sempre chama (o
+  -- corpo JSON vira parâmetros nomeados), e é o que desambigua entre os dois
+  -- overloads de 3 parâmetros quando o valor é NULL -- POSICIONAL um NULL
+  -- seria ambíguo entre (uuid,text,integer) e (uuid,text,uuid).
+  PERFORM devolver_atividade_rdo(p_atividade_id => v_aid,
+    p_motivo => 'A segunda máquina está com quantidade errada', p_maquina_uuid => v_muid_b);
+  SELECT status_revisao, producao_devolvida_maquina_uuid, motivo_devolucao
+    INTO v_st, v_mmuid, v_mot FROM atividades WHERE id = v_aid;
+  PERFORM pg_temp.checar('C', 'devolver com uuid grava qual produção foi apontada',
+    v_st = 'devolvido' AND v_mmuid = v_muid_b,
+    'status=' || coalesce(v_st,'NULL') || ' maquina=' || coalesce(v_mmuid::text,'NULL'));
+
+  -- --- o painel precisa receber o uuid, senão não desenha a distinção ---
+  PERFORM pg_temp.checar('C', 'listar_relatorios_painel devolve producao_devolvida_maquina_uuid',
     EXISTS (
       SELECT 1
       FROM jsonb_array_elements(listar_relatorios_painel(NULL, NULL, NULL, NULL, 200)) rel,
            jsonb_array_elements(rel->'atividades') ativ
       WHERE (ativ->>'id')::uuid = v_aid
-        AND (ativ->>'producao_devolvida_indice')::int = 1
+        AND (ativ->>'producao_devolvida_maquina_uuid')::uuid = v_muid_b
     ));
+
+  -- --- e cada produção precisa vir com o PRÓPRIO uuid, senão o painel não
+  --     tem com o que comparar linha por linha ---
+  PERFORM pg_temp.checar('C', 'listar_relatorios_painel expõe maquina_uuid em cada produção',
+    (SELECT count(*) FROM (
+      SELECT DISTINCT prod->>'maquina_uuid' AS mu
+      FROM jsonb_array_elements(listar_relatorios_painel(NULL, NULL, NULL, NULL, 200)) rel,
+           jsonb_array_elements(rel->'atividades') ativ,
+           jsonb_array_elements(ativ->'producoes') prod
+      WHERE (ativ->>'id')::uuid = v_aid
+    ) t) = 2,
+    'esperava 2 uuids de máquina distintos (uma por produção)');
+
   PERFORM pg_temp.checar('C', 'listar_relatorios_painel devolve editado_em/editado_por',
     EXISTS (
       SELECT 1
@@ -1241,15 +1315,18 @@ BEGIN
 
   -- --- a trava de alternância continua valendo com o overload novo ---
   BEGIN
-    PERFORM devolver_atividade_rdo(v_aid, 'Outra devolução seguida', 0);
-    PERFORM pg_temp.checar('C', 'devolver DUAS VEZES seguidas é recusado (com índice)', false,
+    PERFORM devolver_atividade_rdo(p_atividade_id => v_aid,
+      p_motivo => 'Outra devolução seguida', p_maquina_uuid => v_muid_a);
+    PERFORM pg_temp.checar('C', 'devolver DUAS VEZES seguidas é recusado (com uuid)', false,
       'passou -- geraria outro push pro mesmo pedido');
   EXCEPTION WHEN OTHERS THEN
-    PERFORM pg_temp.checar('C', 'devolver DUAS VEZES seguidas é recusado (com índice)', true, SQLERRM);
+    PERFORM pg_temp.checar('C', 'devolver DUAS VEZES seguidas é recusado (com uuid)', true, SQLERRM);
   END;
 
   -- --- o reenvio do campo apaga o retrato, no mesmo instante em que ele
-  --     deixa de ser verdade ---
+  --     deixa de ser verdade -- e o upsert preserva o id real das máquinas
+  --     que não mudaram (é o que faz a identidade sobreviver de verdade,
+  --     ao contrário do índice antigo) ---
   PERFORM set_config('request.jwt.claims',
     jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
   PERFORM sincronizar_relatorio_rdo(jsonb_build_object('uuid_dispositivo', v_rel,
@@ -1259,25 +1336,38 @@ BEGIN
     'atividades', jsonb_build_array(jsonb_build_object(
       'id', (SELECT uuid_atividade_dispositivo FROM atividades WHERE id = v_aid),
       'tipo_atividade','Construção de Aterro','comprimento_m',10,'largura_m',4,
-      'observacao','CORRIGIDO NO CAMPO'))));
-  SELECT status_revisao, producao_devolvida_indice, motivo_devolucao
-    INTO v_st, v_idx, v_mot FROM atividades WHERE id = v_aid;
-  PERFORM pg_temp.checar('C', 'reenvio limpa o índice da produção devolvida',
-    v_idx IS NULL, 'índice = ' || coalesce(v_idx::text,'NULL'));
+      'observacao','CORRIGIDO NO CAMPO',
+      -- mesmo uuid da máquina A, quantidade corrigida; a B foi removida no
+      -- aparelho (encarregado decidiu que não precisava mais dela).
+      'maquinas', jsonb_build_array(
+        jsonb_build_object('id', v_muid_a, 'equipamento','ESH-18','operador','Leandro Félix',
+          'dados', jsonb_build_object('quantidade', 6))
+      )))));
+  SELECT status_revisao, producao_devolvida_maquina_uuid, motivo_devolucao
+    INTO v_st, v_mmuid, v_mot FROM atividades WHERE id = v_aid;
+  PERFORM pg_temp.checar('C', 'reenvio limpa o uuid da produção devolvida',
+    v_mmuid IS NULL, 'uuid = ' || coalesce(v_mmuid::text,'NULL'));
   PERFORM pg_temp.checar('C', 'reenvio também limpa o motivo e volta pra pendente',
     v_st = 'pendente' AND v_mot IS NULL,
     'status=' || coalesce(v_st,'NULL') || ' motivo=' || coalesce(v_mot,'NULL'));
 
-  -- --- REGRESSÃO do overload de 2 parâmetros: é o que o Painel publicado usa ---
+  SELECT id INTO v_id_maq2 FROM atividade_maquinas WHERE atividade_id = v_aid AND uuid_maquina_dispositivo = v_muid_a;
+  PERFORM pg_temp.checar('C', 'upsert preserva o id real da máquina que não mudou',
+    v_id_maq2 IS NOT NULL AND v_id_maq2 = v_id_maq1,
+    'id antes=' || coalesce(v_id_maq1::text,'NULL') || ' id depois=' || coalesce(v_id_maq2::text,'NULL'));
+  PERFORM pg_temp.checar('C', 'a máquina removida no aparelho some do banco',
+    NOT EXISTS (SELECT 1 FROM atividade_maquinas WHERE atividade_id = v_aid AND uuid_maquina_dispositivo = v_muid_b));
+
+  -- --- REGRESSÃO do overload de 2 parâmetros: continua no ar, mesmo sem uso ---
   PERFORM set_config('request.jwt.claims',
     jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
   PERFORM devolver_atividade_rdo(v_aid, 'Devolução sem apontar produção');
-  SELECT status_revisao, producao_devolvida_indice INTO v_st, v_idx
+  SELECT status_revisao, producao_devolvida_maquina_uuid INTO v_st, v_mmuid
     FROM atividades WHERE id = v_aid;
   PERFORM pg_temp.checar('C', 'devolver com 2 parâmetros continua funcionando',
     v_st = 'devolvido', 'status = ' || coalesce(v_st,'NULL'));
-  PERFORM pg_temp.checar('C', 'e deixa o índice nulo (devolução do apontamento inteiro)',
-    v_idx IS NULL, 'índice = ' || coalesce(v_idx::text,'NULL'));
+  PERFORM pg_temp.checar('C', 'e deixa o uuid da produção nulo (devolução do apontamento inteiro)',
+    v_mmuid IS NULL, 'uuid = ' || coalesce(v_mmuid::text,'NULL'));
 
   PERFORM set_config('request.jwt.claims', '', true);
 EXCEPTION WHEN OTHERS THEN
@@ -1555,7 +1645,7 @@ BEGIN
     'producoes', 'numero', 'status_revisao', 'motivo_devolucao', 'excluido_em',
     'status_anterior_exclusao', 'descricao_atividade', 'codigo_tarifa',
     'unidade_tarifa', 'dimensao_m', 'equipamentos', 'maquinas', 'fotos',
-    'producao_devolvida_indice', 'editado_em', 'editado_por'
+    'producao_devolvida_maquina_uuid', 'maquina_uuid', 'editado_em', 'editado_por'
   ]
   LOOP
     PERFORM pg_temp.checar('D',
