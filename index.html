@@ -727,6 +727,9 @@
     supabaseClient.rpc("verificar_atividades_devolvidas").then(function(resp){
       if (!resp || resp.error) return;
       App.atividadesDevolvidas = resp.data || [];
+      // Só agora o dado está fresco o bastante pra podar com segurança --
+      // ver o comentário de podarRelatoriosAntigos().
+      podarRelatoriosAntigos();
       render();
     }).catch(function(){ /* offline -- mantém o que já sabia */ });
   }
@@ -1197,6 +1200,15 @@
 
   /* ======================= INDEXEDDB ======================= */
   var DB_NAME = "gtm_rdo_db", DB_STORE = "relatorios";
+
+  // Retenção local (18/09): depois de sincronizar, o relatório não precisa
+  // mais viver pra sempre no aparelho -- já dá pra corrigir direto pelo
+  // painel (editar_atividade_rdo). Ver podarRelatoriosAntigos() mais abaixo.
+  // Este número tem que ficar igual em TRÊS lugares: aqui,
+  // retencao_local_pwa.sql (a trava do banco) e Painel/index.html (o botão
+  // Devolver desabilitado). Divergir faria o painel bloquear cedo ou tarde
+  // demais em relação ao que o aparelho realmente ainda guarda.
+  var DIAS_RETENCAO_LOCAL = 30;
   var dbPromise = null;
   function dbOpen(){
     if (dbPromise) return dbPromise;
@@ -2580,6 +2592,46 @@
     });
   }
 
+  // Poda relatórios locais antigos (18/09) -- pedido do Fábio: já que dá pra
+  // corrigir direto pelo painel (editar_atividade_rdo), o aparelho não
+  // precisa guardar um relatório sincronizado pra sempre. Fica só o que
+  // interessa pro encarregado.
+  //
+  // Só apaga quem: (1) sincronizou de verdade, sem foto pendente; (2) passou
+  // de DIAS_RETENCAO_LOCAL dias desde a última sincronização; (3) não tem
+  // NENHUMA atividade aguardando correção agora. O item 3 é o que impede o
+  // impasse -- sem ele, um apontamento devolvido no dia 29 e corrigido só no
+  // dia 32 seria podado no meio do caminho, e a correção chegaria sem ter
+  // mais o que editar.
+  //
+  // Só é seguro rodar isto logo depois de verificarAtividadesDevolvidas()
+  // ter sucesso -- é o único momento em que App.atividadesDevolvidas reflete
+  // o servidor de verdade. Rodar com esse dado desatualizado (ex: no
+  // carregamento, antes de qualquer checagem) podaria algo que na verdade
+  // está devolvido, só porque o aparelho ainda não soube.
+  function podarRelatoriosAntigos(){
+    var agora = Date.now();
+    var restantes = [];
+    var apagou = false;
+    (App.relatorios || []).forEach(function(r){
+      var idadeOk = r.sincronizadoEm &&
+        (agora - new Date(r.sincronizadoEm).getTime()) >= DIAS_RETENCAO_LOCAL * 86400000;
+      var temPendencia = (r.atividades || []).some(function(a){
+        return devolucaoDaAtividade(a) != null;
+      });
+      if (relatorioSincronizado(r) && idadeOk && !temPendencia){
+        dbDelete(r.id);
+        apagou = true;
+      } else {
+        restantes.push(r);
+      }
+    });
+    if (apagou){
+      App.relatorios = restantes;
+      render();
+    }
+  }
+
   // Como o operador se refere a um apontamento ao pedir a devolução.
   //
   // Sem isto, a mensagem de bloqueio mandava "peça a devolução" sem dizer O
@@ -2974,8 +3026,20 @@
     var maquinaUuidApontada = devolucao ? devolucao.producao_devolvida_maquina_uuid : null;
     // Sem uuid apontado (devolução do apontamento inteiro, ou dado antigo sem
     // a coluna), NADA fica travado -- é exatamente o comportamento de antes.
+    //
+    // FALHA ABERTA (18/09), de propósito: o uuid apontado só é confiável se
+    // baterem com uma máquina QUE EXISTE aqui agora. Sem essa confirmação --
+    // aparelho trocado, cache/dados do site limpos, ou um apontamento
+    // sincronizado antes desta identidade existir -- nenhuma máquina local
+    // teria m.id === maquinaUuidApontada, e a conta antiga travava as
+    // 4 (nenhuma bate == "diferente de todas"). Isso é pior que o problema
+    // original: o encarregado não conseguiria corrigir NADA, nem a certa.
+    // Só entra em modo de trava quando a produção apontada é encontrada de
+    // verdade entre as máquinas locais.
+    var maquinaApontadaExisteLocalmente = !!(maquinaUuidApontada &&
+      (a.maquinas||[]).some(function(m){ return m.id === maquinaUuidApontada; }));
     function maquinaTravada(m){
-      return !!(maquinaUuidApontada && m.id !== maquinaUuidApontada);
+      return !!(maquinaApontadaExisteLocalmente && m.id !== maquinaUuidApontada);
     }
 
     var html = '<div class="container">';
@@ -3539,8 +3603,80 @@
     });
   }
 
+  // Reconstrução local (18/09) -- pedido do Fábio: o IndexedDB pode sumir por
+  // motivo nenhum relacionado à poda de 30 dias (cache/dados do site limpos
+  // pelo usuário, aparelho trocado) -- e o que já SUBIU pro banco não pode
+  // ficar irrecuperável só porque o navegador esqueceu. Só roda quando o
+  // IndexedDB está vazio; nunca por cima de dado que já existe -- isto é
+  // resgate, não sincronização.
+  //
+  // Rascunho nunca sincronizado não volta -- nunca existiu no servidor pra
+  // puxar de volta. Decisão aceita pelo Fábio: refazer um rascunho é sempre
+  // uma opção real, e a chance de perder justo um rascunho é baixa.
+  //
+  // O ponto que importa: listar_meus_relatorios_pwa() devolve cada máquina
+  // com `id` = uuid_maquina_dispositivo, o MESMO valor que o servidor compara
+  // em producao_devolvida_maquina_uuid -- é o que faz a trava de edição
+  // (maquinaTravada) reconhecer a produção certa mesmo depois de uma
+  // reconstrução, sem precisar de nenhuma lógica extra aqui.
+  function reconstruirRelatoriosDoServidor(){
+    supabaseClient.rpc("listar_meus_relatorios_pwa").then(function(resp){
+      if (!resp || resp.error || !resp.data){ render(); return; }
+      var lista = resp.data;
+      if (!lista.length){ App.relatorios = []; render(); return; }
+
+      var caminhos = [];
+      lista.forEach(function(r){
+        (r.atividades || []).forEach(function(a){
+          (a.fotos || []).forEach(function(f){
+            f.id = uid(); f.blob = null; f.url = "";
+            if (f.storagePath) caminhos.push(f.storagePath);
+          });
+        });
+      });
+
+      function persistirTudo(){
+        lista.forEach(function(r){ persistir(r); });
+        App.relatorios = lista;
+        render();
+        if (navigator.onLine) tentarSincronizarTodosPendentes();
+      }
+
+      // Fotos: a URL assinada é gerada aqui mesmo, com a policy de leitura
+      // que já existe pra authenticated (mesma técnica que o Painel usa).
+      // Validade de 1h, sem renovação automática depois -- suficiente pra
+      // não perder o dado, não é o mesmo que manter a foto acessível pra
+      // sempre sem reabrir o app.
+      if (!caminhos.length){ persistirTudo(); return; }
+      supabaseClient.storage.from(BUCKET_EVIDENCIAS)
+        .createSignedUrls(caminhos, 3600)
+        .then(function(respFotos){
+          var urls = {};
+          (respFotos && respFotos.data ? respFotos.data : []).forEach(function(item){
+            if (item && item.signedUrl && item.path) urls[item.path] = item.signedUrl;
+          });
+          lista.forEach(function(r){
+            (r.atividades || []).forEach(function(a){
+              (a.fotos || []).forEach(function(f){
+                if (f.storagePath && urls[f.storagePath]) f.url = urls[f.storagePath];
+              });
+            });
+          });
+          persistirTudo();
+        })
+        .catch(function(){ persistirTudo(); });
+    }).catch(function(){ render(); });
+  }
+
   function carregarRelatoriosSalvos(){
     dbGetAll().then(function(lista){
+      // Vazio pode ser "nunca usei" ou "perdi o que tinha" -- não dá pra
+      // distinguir daqui, e não precisa: se for a primeira vez, o servidor
+      // também devolve vazio, sem mal nenhum.
+      if (lista.length === 0 && navigator.onLine && supabaseClient){
+        reconstruirRelatoriosDoServidor();
+        return;
+      }
       regenerarUrlsFotos(lista);
       App.relatorios = lista;
       // Antes de desenhar: RDOs sincronizados numa versão anterior do app não

@@ -282,9 +282,15 @@ checar("reabrir NÃO limpa enviadaEm",
 // é armadilha.
 const fonteMigracao = extrairFuncao("function marcarEnviadasRetroativo", "function atividadeJaEnviada");
 
+// Distância em caracteres é frágil (o comentário logo acima já explica por
+// quê) -- por isso, diferente da primeira versão deste teste, aqui se lê o
+// CORPO da função (corpoDaFuncao, que conta chaves) em vez de medir {0,N}.
+// Precisou mudar quando reconstruirRelatoriosDoServidor() entrou entre a
+// declaração e a chamada e empurrou a distância de 400 pra quase 700 --
+// exatamente o tipo de armadilha que este comentário descreve.
 checar("RDO sincronizado antes desta versão também fica protegido",
   fonteMigracao.indexOf("enviadaEm") !== -1 &&
-  /carregarRelatoriosSalvos[\s\S]{0,400}marcarEnviadasRetroativo\(\)/.test(htmlCompleto),
+  /marcarEnviadasRetroativo\(\)/.test(corpoDaFuncao("carregarRelatoriosSalvos")),
   "sem marcação retroativa, o que já está no aparelho segue destravado");
 
 // SEGUNDA falha da mesma trava, achada pelo Fábio em 09/09: um RDO
@@ -1534,8 +1540,16 @@ checar("a trava lê o uuid da produção devolvida a partir da PRÓPRIA atividad
   "sem isso a trava não sabe qual produção foi apontada, ou olharia a devolução errada");
 
 checar("maquinaTravada(m) só trava quando existe produção apontada E não é esta máquina",
-  /function maquinaTravada\(m\)\{\s*return\s*!!\(maquinaUuidApontada\s*&&\s*m\.id\s*!==\s*maquinaUuidApontada\)/.test(corpoTelaAtiv),
+  /function maquinaTravada\(m\)\{\s*return\s*!!\(maquinaApontadaExisteLocalmente\s*&&\s*m\.id\s*!==\s*maquinaUuidApontada\)/.test(corpoTelaAtiv),
   "sem maquinaUuidApontada (caso do formulário Padrão, que devolve o apontamento inteiro, e do apontamento nunca devolvido) nada pode travar");
+
+// FALHA ABERTA (18/09): a trava só liga quando a máquina apontada é achada
+// de verdade entre as locais. Sem essa confirmação (aparelho trocado, cache
+// limpo, dado de antes desta identidade existir), travar tudo bloquearia
+// até a correção certa -- pior que o problema original.
+checar("a trava só liga quando a máquina apontada é encontrada entre as locais (falha aberta)",
+  /var\s+maquinaApontadaExisteLocalmente\s*=\s*!!\(maquinaUuidApontada\s*&&\s*\(a\.maquinas\|\|\[\]\)\.some\(function\(m\)\{\s*return\s*m\.id\s*===\s*maquinaUuidApontada;\s*\}\)\)/.test(corpoTelaAtiv),
+  "sem essa checagem, um uuid apontado que não bate com nenhuma máquina local trava TODAS -- o encarregado fica sem conseguir editar nem a certa");
 
 // Cada bloco do 'if/else if' desenha um formulário -- corta pelos mesmos
 // marcadores que decidem qual roda (mesma técnica já usada para a ordem da
@@ -1604,6 +1618,117 @@ checar("o formulário Padrão (obra) não ganhou um desvio próprio para a trava
 checar("existe CSS para o card travado e para o seletor travado",
   /\.maquina-card-travada\{/.test(cssPwa) && /\.fake-select-travado\{/.test(cssPwa),
   "a marcação usa classes sem estilo -- o card travado ficaria com a cara de um card quebrado");
+
+// ---------------------------------------------------------------------------
+// Retenção local: poda relatórios sincronizados há muito tempo (18/09)
+// ---------------------------------------------------------------------------
+// Pedido do Fábio: já que dá pra corrigir direto pelo painel
+// (editar_atividade_rdo), o aparelho não precisa guardar relatório
+// sincronizado pra sempre. Executa a função de verdade (não só regex no
+// texto), porque a regra tem três condições que precisam estar E-adas
+// certo -- um teste de fonte não pegaria um "&&" que virou "||".
+console.log("\n--- poda de relatórios locais antigos (18/09) ---\n");
+
+const fontePodar = corpoDaFuncao("podarRelatoriosAntigos");
+const AGORA = Date.now();
+function diasAtras(n) { return new Date(AGORA - n * 86400000).toISOString(); }
+
+function rodarPoda(relatoriosFixture, devolvidasFixture) {
+  const apagados = [];
+  let renderChamado = false;
+  const fn = new Function(
+    "App", "relatorioSincronizado", "devolucaoDaAtividade", "dbDelete", "render", "DIAS_RETENCAO_LOCAL",
+    fontePodar + "; podarRelatoriosAntigos(); return App.relatorios.map(function(r){ return r.id; });"
+  );
+  const App = { relatorios: relatoriosFixture, atividadesDevolvidas: devolvidasFixture };
+  const relatorioSincronizado = function (r) { return r.status === "concluido" && r.rpcSincronizado === true; };
+  const devolucaoDaAtividade = function (a) {
+    return (App.atividadesDevolvidas || []).filter(function (d) { return d.atividade_id === a.id; })[0] || null;
+  };
+  const dbDelete = function (id) { apagados.push(id); };
+  const render = function () { renderChamado = true; };
+  const restantes = fn(App, relatorioSincronizado, devolucaoDaAtividade, dbDelete, render, 30);
+  return { restantes: restantes, apagados: apagados, renderChamado: renderChamado };
+}
+
+// 1. Caminho feliz: sincronizado há 31 dias, sem pendência -- some.
+let r = { id: "r1", status: "concluido", rpcSincronizado: true, sincronizadoEm: diasAtras(31), atividades: [{ id: "a1" }] };
+let res = rodarPoda([r], []);
+checar("relatório sincronizado há 31 dias, sem pendência -- é podado",
+  res.apagados.indexOf("r1") !== -1 && res.restantes.indexOf("r1") === -1 && res.renderChamado,
+  JSON.stringify(res));
+
+// 2. A borda que existe pra evitar o impasse: velho, MAS com correção pendente.
+r = { id: "r2", status: "concluido", rpcSincronizado: true, sincronizadoEm: diasAtras(31), atividades: [{ id: "a2" }] };
+res = rodarPoda([r], [{ atividade_id: "a2" }]);
+checar("relatório antigo com atividade aguardando correção -- NÃO é podado",
+  res.apagados.length === 0 && res.restantes.indexOf("r2") !== -1,
+  "podar aqui apagaria o único lugar onde a correção poderia acontecer -- " + JSON.stringify(res));
+
+// 3. Ainda dentro do prazo -- não é hora.
+r = { id: "r3", status: "concluido", rpcSincronizado: true, sincronizadoEm: diasAtras(29), atividades: [] };
+res = rodarPoda([r], []);
+checar("relatório sincronizado há 29 dias -- ainda dentro do prazo, não é podado",
+  res.apagados.length === 0, JSON.stringify(res));
+
+// 4. Nunca terminou de sincronizar -- relatorioSincronizado() barra sozinho.
+r = { id: "r4", status: "rascunho", rpcSincronizado: false, sincronizadoEm: diasAtras(60), atividades: [] };
+res = rodarPoda([r], []);
+checar("rascunho nunca sincronizado -- não é podado mesmo velho",
+  res.apagados.length === 0, JSON.stringify(res));
+
+// A poda só é segura logo depois do servidor confirmar o que está devolvido
+// -- rodar antes disso (ex: ao carregar do IndexedDB, com
+// App.atividadesDevolvidas ainda vazio por padrão) podaria algo que na
+// verdade está devolvido, só porque o aparelho ainda não tinha checado.
+checar("a poda roda dentro de verificarAtividadesDevolvidas, depois do dado do servidor chegar",
+  /App\.atividadesDevolvidas\s*=\s*resp\.data\s*\|\|\s*\[\];[\s\S]{0,150}?podarRelatoriosAntigos\(\);/.test(corpoDaFuncao("verificarAtividadesDevolvidas")),
+  "a chamada não está logo após o dado fresco chegar");
+
+checar("a poda NÃO roda em carregarRelatoriosSalvos (App.atividadesDevolvidas ainda não foi confirmado ali)",
+  !/podarRelatoriosAntigos\(\)/.test(corpoDaFuncao("carregarRelatoriosSalvos")),
+  "rodar a poda nesse ponto arriscaria apagar algo devolvido antes do primeiro check-in do dia");
+
+checar("o prazo de retenção é uma constante nomeada, não um número solto",
+  /var\s+DIAS_RETENCAO_LOCAL\s*=\s*30;/.test(htmlCompleto),
+  "sem constante nomeada, o mesmo número (30) teria que ser repetido e poderia divergir");
+
+// ---------------------------------------------------------------------------
+// Reconstrução local a partir do servidor (18/09)
+// ---------------------------------------------------------------------------
+// Pedido do Fábio: o IndexedDB pode sumir por um motivo que não é a poda
+// (cache/dados do site limpos, aparelho trocado) -- o que já subiu pro banco
+// não pode ficar irrecuperável só por isso. O comportamento de ponta a ponta
+// (RPC mockada, IndexedDB real, a trava reconhecendo o id recuperado) está
+// provado em ferramentas/provar_reconstrucao_local.js -- aqui é só a
+// estrutura, rápido de rodar a cada mudança.
+console.log("\n--- reconstrução local a partir do servidor (18/09) ---\n");
+
+const fonteReconstrucao = corpoDaFuncao("reconstruirRelatoriosDoServidor");
+
+checar("a reconstrução chama a RPC certa",
+  /supabaseClient\.rpc\("listar_meus_relatorios_pwa"\)/.test(fonteReconstrucao),
+  "sem a chamada certa a função não busca nada do servidor");
+
+checar("cada relatório reconstruído é persistido no IndexedDB (não fica só na memória)",
+  /lista\.forEach\(function\s*\(r\)\{\s*persistir\(r\);\s*\}\)/.test(fonteReconstrucao),
+  "sem persistir(), a reconstrução se perderia no próximo recarregamento -- o problema voltaria");
+
+checar("fotos reconstruídas nascem sem blob (só a próxima foto tirada tem binário local)",
+  /f\.blob\s*=\s*null/.test(fonteReconstrucao),
+  "com blob indefinido em vez de null, todasFotosEnviadas()/regenerarUrlsFotos() poderiam se comportar diferente do esperado");
+
+checar("a URL da foto é assinada com o MESMO bucket que o upload usa",
+  new RegExp("supabaseClient\\.storage\\.from\\(BUCKET_EVIDENCIAS\\)[\\s\\S]{0,60}createSignedUrls").test(fonteReconstrucao),
+  "bucket errado ou hardcoded divergiria do BUCKET_EVIDENCIAS usado no upload");
+
+checar("a reconstrução só dispara quando o IndexedDB está vazio",
+  /lista\.length\s*===\s*0[\s\S]{0,60}navigator\.onLine[\s\S]{0,60}supabaseClient/.test(corpoDaFuncao("carregarRelatoriosSalvos")),
+  "sem essa condição, a reconstrução rodaria por cima de dado local que já existe, ou tentaria offline");
+
+checar("a reconstrução não roda no caminho normal (só no vazio, via early return)",
+  /reconstruirRelatoriosDoServidor\(\);\s*return;/.test(corpoDaFuncao("carregarRelatoriosSalvos")),
+  "sem o return, o código seguiria e sobrescreveria App.relatorios com a lista vazia do IndexedDB");
 
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");

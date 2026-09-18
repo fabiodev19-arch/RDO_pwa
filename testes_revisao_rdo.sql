@@ -290,7 +290,11 @@ BEGIN
     'public.devolver_atividade_rdo(uuid,text,integer)',
     -- O overload por uuid da máquina é o que vale de verdade -- é o que o
     -- Painel chama quando o revisor aponta uma produção específica.
-    'public.devolver_atividade_rdo(uuid,text,uuid)'
+    'public.devolver_atividade_rdo(uuid,text,uuid)',
+    -- Reconstrução local (18/09): o PWA usa isto quando o IndexedDB some por
+    -- um motivo que não é a poda de 30 dias (cache/dados do site limpos,
+    -- aparelho trocado) -- resgata o que já subiu, filtrado por dono.
+    'public.listar_meus_relatorios_pwa()'
   ]
   LOOP
     PERFORM pg_temp.checar('B', 'função existe: ' || v_f, pg_temp.existe_funcao(v_f));
@@ -315,7 +319,8 @@ BEGIN
     'public.salvar_descricao_tarifa(uuid,text,text,text,numeric,boolean)',
     'public.editar_atividade_rdo(uuid,text,text,text,text,text,numeric,numeric,numeric,numeric,numeric,numeric,text)',
     'public.devolver_atividade_rdo(uuid,text,integer)',
-    'public.devolver_atividade_rdo(uuid,text,uuid)'
+    'public.devolver_atividade_rdo(uuid,text,uuid)',
+    'public.listar_meus_relatorios_pwa()'
   ]
   LOOP
     PERFORM pg_temp.checar('B', 'anon NÃO executa ' || v_f,
@@ -1373,6 +1378,230 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   PERFORM pg_temp.checar('C', 'editar pelo painel + devolução individual', false, SQLERRM);
 END $secao_c_edicao$;
+
+-- ----------------------------------------------------------------------------
+-- Retenção local do PWA (18/09): depois de 30 dias sincronizado e sem
+-- correção pendente, o aparelho apaga o relatório sozinho
+-- (PWA/RDO/RDO/index.html, podarRelatoriosAntigos). Devolver um apontamento
+-- passado esse prazo poderia apontar pra um dado que já não existe mais no
+-- aparelho -- a notificação chegaria sem ter o que corrigir. O botão
+-- desabilitado no painel é conveniência; quem garante de verdade é esta
+-- checagem em devolver_atividade_rdo, mesmo padrão da alternância obrigatória.
+-- ----------------------------------------------------------------------------
+DO $secao_c_retencao$
+DECLARE
+  v_uid uuid;
+  v_rel_uuid_velha  uuid := gen_random_uuid();
+  v_rel_uuid_nova   uuid := gen_random_uuid();
+  v_ativ_uuid_velha uuid := gen_random_uuid();
+  v_ativ_uuid_nova  uuid := gen_random_uuid();
+  v_payload jsonb;
+  v_rel_id_velha uuid;
+  v_rel_id_nova  uuid;
+  v_aid_velha uuid;
+  v_aid_nova  uuid;
+  v_st text;
+BEGIN
+  SELECT id INTO v_uid FROM auth.users ORDER BY created_at LIMIT 1;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+
+  v_payload := jsonb_build_object(
+    'uuid_dispositivo', v_rel_uuid_velha,
+    'cliente', 'Colheita', 'contrato', 'ARAUCO', 'faena', 'TESTE RETENCAO',
+    'tipo_estrada', 'Acesso', 'equipe_frente', 'GTM - Teste',
+    'fazenda', 'Elo Dourado 2', 'data', '2026-08-01',
+    'encarregado', 'Elson', 'supervisor', 'Valmir',
+    'tecnico_arauco', 'Edwilson', 'supervisor_arauco', 'Luciano',
+    'atividades', jsonb_build_array(jsonb_build_object(
+      'id', v_ativ_uuid_velha, 'tipo_atividade', 'TESTE RETENCAO VELHO'
+    ))
+  );
+  PERFORM sincronizar_relatorio_rdo(v_payload);
+
+  v_payload := jsonb_build_object(
+    'uuid_dispositivo', v_rel_uuid_nova,
+    'cliente', 'Colheita', 'contrato', 'ARAUCO', 'faena', 'TESTE RETENCAO',
+    'tipo_estrada', 'Acesso', 'equipe_frente', 'GTM - Teste',
+    'fazenda', 'Elo Dourado 2', 'data', '2026-09-17',
+    'encarregado', 'Elson', 'supervisor', 'Valmir',
+    'tecnico_arauco', 'Edwilson', 'supervisor_arauco', 'Luciano',
+    'atividades', jsonb_build_array(jsonb_build_object(
+      'id', v_ativ_uuid_nova, 'tipo_atividade', 'TESTE RETENCAO NOVO'
+    ))
+  );
+  PERFORM sincronizar_relatorio_rdo(v_payload);
+
+  SELECT id INTO v_rel_id_velha FROM relatorios WHERE uuid_dispositivo = v_rel_uuid_velha;
+  SELECT id INTO v_rel_id_nova  FROM relatorios WHERE uuid_dispositivo = v_rel_uuid_nova;
+  SELECT id INTO v_aid_velha FROM atividades WHERE relatorio_id = v_rel_id_velha;
+  SELECT id INTO v_aid_nova  FROM atividades WHERE relatorio_id = v_rel_id_nova;
+
+  -- Simula os 31 dias sem esperar 31 dias.
+  UPDATE relatorios SET sincronizado_em = now() - interval '31 days' WHERE id = v_rel_id_velha;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+
+  BEGIN
+    PERFORM devolver_atividade_rdo(p_atividade_id => v_aid_velha, p_motivo => 'teste', p_maquina_uuid => NULL::uuid);
+    PERFORM pg_temp.checar('C', 'devolver (overload uuid) recusa apontamento sincronizado há mais de 30 dias', false,
+      'deveria ter recusado e não recusou');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'devolver (overload uuid) recusa apontamento sincronizado há mais de 30 dias',
+      SQLERRM LIKE '%sincronizado há mais de 30 dias%', SQLERRM);
+  END;
+
+  BEGIN
+    PERFORM devolver_atividade_rdo(p_atividade_id => v_aid_velha, p_motivo => 'teste', p_indice_producao => NULL::integer);
+    PERFORM pg_temp.checar('C', 'devolver (overload integer, ainda existe mas morto) também recusa', false,
+      'deveria ter recusado e não recusou');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'devolver (overload integer, ainda existe mas morto) também recusa',
+      SQLERRM LIKE '%sincronizado há mais de 30 dias%', SQLERRM);
+  END;
+
+  BEGIN
+    PERFORM devolver_atividade_rdo(v_aid_velha, 'teste');
+    PERFORM pg_temp.checar('C', 'devolver (wrapper de 2 parâmetros) também recusa', false,
+      'deveria ter recusado e não recusou');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'devolver (wrapper de 2 parâmetros) também recusa',
+      SQLERRM LIKE '%sincronizado há mais de 30 dias%', SQLERRM);
+  END;
+
+  -- O recente (sincronizado agora, pelo DEFAULT now() da coluna) continua
+  -- funcionando normalmente -- a trava não pode pegar quem está dentro do prazo.
+  PERFORM devolver_atividade_rdo(p_atividade_id => v_aid_nova, p_motivo => 'teste ok', p_maquina_uuid => NULL::uuid);
+  SELECT status_revisao INTO v_st FROM atividades WHERE id = v_aid_nova;
+  PERFORM pg_temp.checar('C', 'devolver um apontamento recente continua funcionando normalmente',
+    v_st = 'devolvido', 'status = ' || coalesce(v_st, 'NULL'));
+
+  PERFORM set_config('request.jwt.claims', '', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.checar('C', 'retenção local: trava de 30 dias em devolver_atividade_rdo', false, SQLERRM);
+END $secao_c_retencao$;
+
+-- ----------------------------------------------------------------------------
+-- Reconstrução local a partir do servidor (18/09): o PWA usa isto quando o
+-- IndexedDB some por um motivo que não é a poda (cache/dados do site
+-- limpos, aparelho trocado) -- o que já subiu pro banco não pode ficar
+-- irrecuperável só por isso.
+-- ----------------------------------------------------------------------------
+DO $secao_c_reconstrucao$
+DECLARE
+  v_uid uuid;
+  v_uid_outro uuid;
+  v_rel_uuid uuid := gen_random_uuid();
+  v_ativ_uuid uuid := gen_random_uuid();
+  v_ativ_excluida_uuid uuid := gen_random_uuid();
+  v_muid_a uuid := gen_random_uuid();
+  v_muid_b uuid := gen_random_uuid();
+  v_payload jsonb;
+  v_ativ_excluida_id uuid;
+  v_resultado jsonb;
+  v_rel_out jsonb;
+  v_ativ_out jsonb;
+  v_maq_a jsonb;
+  v_maq_b jsonb;
+BEGIN
+  SELECT id INTO v_uid FROM auth.users ORDER BY created_at LIMIT 1;
+  SELECT id INTO v_uid_outro FROM auth.users WHERE id <> v_uid ORDER BY created_at LIMIT 1;
+  IF v_uid IS NULL THEN
+    PERFORM pg_temp.pular('C', 'reconstrução local a partir do servidor', 'auth.users vazia');
+    RETURN;
+  END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+
+  v_payload := jsonb_build_object(
+    'uuid_dispositivo', v_rel_uuid,
+    'cliente', 'Colheita', 'contrato', 'ARAUCO', 'faena', 'TESTE RECONSTRUCAO',
+    'tipo_estrada', 'Acesso', 'equipe_frente', 'GTM - Teste',
+    'fazenda', 'Elo Dourado 2', 'data', '2026-09-01',
+    'encarregado', 'Elson', 'supervisor', 'Valmir',
+    'tecnico_arauco', 'Edwilson', 'supervisor_arauco', 'Luciano',
+    'criadoEm', now(), 'concluidoEm', now(),
+    'atividades', jsonb_build_array(
+      jsonb_build_object(
+        'id', v_ativ_uuid, 'tipo_atividade', 'PÁ CARREGADEIRA - HT',
+        'maquinas', jsonb_build_array(
+          jsonb_build_object('id', v_muid_a, 'equipamento', 'PC-19', 'operador', 'RICARDO',
+            'dados', jsonb_build_object('hora_inicial', 7.5, 'hora_final', 12)),
+          jsonb_build_object('id', v_muid_b, 'equipamento', 'MN-16', 'operador', 'SILVANEI',
+            'dados', jsonb_build_object('hora_inicial', 8, 'hora_final', 16))
+        ),
+        'fotos', jsonb_build_array(jsonb_build_object('storage_path', 'teste/evidencia-reconstrucao.jpg'))
+      ),
+      jsonb_build_object('id', v_ativ_excluida_uuid, 'tipo_atividade', 'ESTA SOME DEPOIS')
+    )
+  );
+  PERFORM sincronizar_relatorio_rdo(v_payload);
+
+  -- Pra ficar excluível de verdade (regra do projeto: só sai do payload quem
+  -- já está 'devolvido'), devolve a segunda antes de omiti-la.
+  SELECT id INTO v_ativ_excluida_id FROM atividades WHERE uuid_atividade_dispositivo = v_ativ_excluida_uuid;
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+  PERFORM devolver_atividade_rdo(v_ativ_excluida_id, 'motivo de teste', NULL::uuid);
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+
+  v_payload := jsonb_set(v_payload, '{atividades}', jsonb_build_array(v_payload->'atividades'->0));
+  PERFORM sincronizar_relatorio_rdo(v_payload);
+
+  SELECT listar_meus_relatorios_pwa() INTO v_resultado;
+  SELECT r INTO v_rel_out FROM jsonb_array_elements(v_resultado) r WHERE (r->>'id')::uuid = v_rel_uuid;
+
+  PERFORM pg_temp.checar('C', 'reconstrução: achou o relatório do próprio usuário', v_rel_out IS NOT NULL);
+  PERFORM pg_temp.checar('C', 'reconstrução: campo "data" no formato local (não data_relatorio)',
+    v_rel_out->>'data' = '2026-09-01', coalesce(v_rel_out->>'data', 'NULL'));
+  PERFORM pg_temp.checar('C', 'reconstrução: rpcSincronizado=true e status=concluido',
+    (v_rel_out->>'rpcSincronizado')::boolean = true AND v_rel_out->>'status' = 'concluido');
+  PERFORM pg_temp.checar('C', 'reconstrução: sincronizadoEm preenchido (usado pela poda de 30 dias no PWA)',
+    v_rel_out->>'sincronizadoEm' IS NOT NULL);
+  PERFORM pg_temp.checar('C', 'reconstrução: atividade excluída no aparelho não volta',
+    jsonb_array_length(v_rel_out->'atividades') = 1,
+    'esperava 1, veio ' || jsonb_array_length(v_rel_out->'atividades'));
+
+  SELECT a INTO v_ativ_out FROM jsonb_array_elements(v_rel_out->'atividades') a WHERE (a->>'id')::uuid = v_ativ_uuid;
+  PERFORM pg_temp.checar('C', 'reconstrução: atividade com o id do dispositivo', v_ativ_out IS NOT NULL);
+  PERFORM pg_temp.checar('C', 'reconstrução: enviadaEm preenchido (trava de excluir/editar)',
+    v_ativ_out->>'enviadaEm' IS NOT NULL);
+
+  SELECT m INTO v_maq_a FROM jsonb_array_elements(v_ativ_out->'maquinas') m WHERE (m->>'id')::uuid = v_muid_a;
+  SELECT m INTO v_maq_b FROM jsonb_array_elements(v_ativ_out->'maquinas') m WHERE (m->>'id')::uuid = v_muid_b;
+  PERFORM pg_temp.checar('C',
+    'reconstrução: as duas máquinas voltam com o MESMO id de dispositivo (é o que a trava de edição do PWA compara)',
+    v_maq_a IS NOT NULL AND v_maq_b IS NOT NULL);
+  PERFORM pg_temp.checar('C', 'reconstrução: dados da máquina vêm achatados (hora_inicial no nível certo, não dentro de "dados")',
+    (v_maq_a->>'hora_inicial')::numeric = 7.5 AND (v_maq_a->>'hora_final')::numeric = 12,
+    coalesce(v_maq_a::text, 'NULL'));
+  PERFORM pg_temp.checar('C', 'reconstrução: foto volta com storagePath em camelCase (formato local)',
+    (v_ativ_out->'fotos'->0->>'storagePath') = 'teste/evidencia-reconstrucao.jpg');
+
+  IF v_uid_outro IS NOT NULL THEN
+    PERFORM set_config('request.jwt.claims',
+      jsonb_build_object('sub', v_uid_outro, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+    SELECT listar_meus_relatorios_pwa() INTO v_resultado;
+    PERFORM pg_temp.checar('C', 'reconstrução: outro usuário NÃO vê este relatório (filtro por criado_por)',
+      NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_resultado) r WHERE (r->>'id')::uuid = v_rel_uuid));
+  ELSE
+    PERFORM pg_temp.pular('C', 'reconstrução: outro usuário NÃO vê este relatório', 'só existe 1 usuário em auth.users');
+  END IF;
+
+  PERFORM set_config('request.jwt.claims', '', true);
+  BEGIN
+    PERFORM listar_meus_relatorios_pwa();
+    PERFORM pg_temp.checar('C', 'reconstrução: sem login é recusado', false, 'a chamada passou');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'reconstrução: sem login é recusado', SQLERRM ILIKE '%logado%', SQLERRM);
+  END;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.checar('C', 'reconstrução local a partir do servidor', false, SQLERRM);
+END $secao_c_reconstrucao$;
 
 -- ============================================================================
 -- SEÇÃO D — regressão: o que já funcionava tem que continuar funcionando
