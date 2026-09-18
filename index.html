@@ -3111,7 +3111,20 @@
           '<button class="rm-maquina" data-maqidx="'+idx+'" data-action="rm-maquina">'+closeXIcon()+' Remover máquina</button>'+
         '</div>';
       });
-      html += '<button class="add-dashed" id="btn-add-maquina">'+plusIcon()+' Adicionar máquina</button>';
+      // 18/09 -- achado pelo Fábio testando: adicionar uma máquina NOVA
+      // enquanto outra produção está travada por devolução criava uma
+      // máquina que nascia travada também (o id novo nunca bate com o uuid
+      // apontado), sem input habilitado e sem botão de remover -- um beco
+      // sem saída de verdade, e o pior: a validação ainda exigia os campos
+      // dela pra liberar o envio. A correção certa é não deixar adicionar
+      // enquanto uma correção pontual está em aberto -- não é a hora de
+      // acrescentar produção nova, é a hora de corrigir a apontada.
+      if (maquinaApontadaExisteLocalmente){
+        html += '<p class="helper-text">Este apontamento tem uma produção específica devolvida para correção. '+
+          'Para adicionar uma nova máquina, primeiro finalize esta correção e reenvie.</p>';
+      } else {
+        html += '<button class="add-dashed" id="btn-add-maquina">'+plusIcon()+' Adicionar máquina</button>';
+      }
 
       html += campoHtml(camposHM[1], a.observacao);
 
@@ -3194,7 +3207,16 @@
           '<button class="rm-maquina" data-mdidx="'+idx+'" data-action="rm-maquina-detalhada">'+closeXIcon()+' Remover</button>'+
         '</div>';
       });
-      html += '<button class="add-dashed" id="btn-add-maquina-detalhada">'+plusIcon()+' Adicionar equipamento</button>';
+      // Mesmo motivo do Hora Máquina logo acima: não deixar adicionar
+      // equipamento novo enquanto uma produção específica está travada por
+      // devolução -- a produção nova nasceria travada e sem botão de
+      // remover, um beco sem saída de verdade.
+      if (maquinaApontadaExisteLocalmente){
+        html += '<p class="helper-text">Este apontamento tem uma produção específica devolvida para correção. '+
+          'Para adicionar um novo equipamento, primeiro finalize esta correção e reenvie.</p>';
+      } else {
+        html += '<button class="add-dashed" id="btn-add-maquina-detalhada">'+plusIcon()+' Adicionar equipamento</button>';
+      }
 
       html += '<div class="section-title">Evidências fotográficas</div>';
       html += renderFotoGridHtml(a);
@@ -3335,7 +3357,12 @@
     document.querySelectorAll('[data-action="rm-eq"]').forEach(function(btn){
       btn.onclick = function(){
         var idx = Number(btn.getAttribute("data-eqidx"));
-        a.equipamentos.splice(idx,1); render();
+        // 18/09 -- pedido do Fábio: sem aviso, um toque sem querer apaga o
+        // equipamento e o operador digitados, e o encarregado tem que
+        // preencher tudo de novo.
+        showConfirm("Remover equipamento?", "Os dados preenchidos aqui serão perdidos.", "Remover", function(){
+          a.equipamentos.splice(idx,1); render();
+        });
       };
     });
 
@@ -3376,7 +3403,12 @@
     document.querySelectorAll('[data-action="rm-maquina"]').forEach(function(btn){
       btn.onclick = function(){
         var idx = Number(btn.getAttribute("data-maqidx"));
-        a.maquinas.splice(idx,1); render();
+        // 18/09 -- pedido do Fábio: sem aviso, um toque sem querer apaga a
+        // máquina e as horas digitadas, e o encarregado tem que preencher
+        // tudo de novo.
+        showConfirm("Remover máquina?", "Os dados preenchidos aqui serão perdidos.", "Remover", function(){
+          a.maquinas.splice(idx,1); render();
+        });
       };
     });
 
@@ -3421,7 +3453,11 @@
     document.querySelectorAll('[data-action="rm-maquina-detalhada"]').forEach(function(btn){
       btn.onclick = function(){
         var idx = Number(btn.getAttribute("data-mdidx"));
-        a.maquinas.splice(idx,1); render();
+        // 18/09 -- mesmo motivo dos outros dois: sem aviso, um toque sem
+        // querer apaga tudo o que foi digitado nesse equipamento.
+        showConfirm("Remover equipamento?", "Os dados preenchidos aqui serão perdidos.", "Remover", function(){
+          a.maquinas.splice(idx,1); render();
+        });
       };
     });
 

@@ -1604,6 +1604,25 @@ function trechoAte(fonte, inicioTxt, fimTxt) {
     "removeria a produção que o painel apontou para correção -- justamente a que não pode sumir");
 });
 
+// 18/09 -- achado pelo Fábio testando: adicionar uma máquina NOVA enquanto
+// outra produção está travada por devolução criava uma máquina que nascia
+// TRAVADA também (o id novo nunca bate com o uuid apontado) -- sem input
+// habilitado e sem botão de remover, um beco sem saída de verdade, e a
+// validação ainda exigia os campos dela pra liberar o envio. A correção é
+// não oferecer "Adicionar" enquanto uma correção pontual está em aberto.
+[
+  { nome: "Hora Máquina Trabalhada", bloco: blocoHM, idBotao: "btn-add-maquina" },
+  { nome: "Máquinas Detalhado", bloco: blocoMD, idBotao: "btn-add-maquina-detalhada" }
+].forEach(function (t) {
+  checar(t.nome + ": o botão Adicionar some quando uma produção específica está travada",
+    new RegExp("if\\s*\\(maquinaApontadaExisteLocalmente\\)\\{[\\s\\S]{0,400}?\\}\\s*else\\s*\\{[\\s\\S]{0,200}?" + t.idBotao).test(t.bloco),
+    "sem essa condição, dá pra adicionar uma produção nova que nasce travada e sem botão de remover -- beco sem saída");
+
+  checar(t.nome + ": existe um aviso explicando por que não dá pra adicionar agora",
+    new RegExp("maquinaApontadaExisteLocalmente\\)\\{[\\s\\S]{0,300}?finalize esta correção").test(t.bloco),
+    "botão sumindo sem explicação parece bug, não regra");
+});
+
 // O formulário Padrão (obra) é o caso em que a trava não precisa fazer nada:
 // há uma produção só por atividade, e a devolução dela sempre chega com
 // maquina_uuid nulo (Painel/index.html: producoes.length===1 -> devolucaoSimples
@@ -1729,6 +1748,40 @@ checar("a reconstrução só dispara quando o IndexedDB está vazio",
 checar("a reconstrução não roda no caminho normal (só no vazio, via early return)",
   /reconstruirRelatoriosDoServidor\(\);\s*return;/.test(corpoDaFuncao("carregarRelatoriosSalvos")),
   "sem o return, o código seguiria e sobrescreveria App.relatorios com a lista vazia do IndexedDB");
+
+// ---------------------------------------------------------------------------
+// Remover máquina/equipamento pede confirmação (18/09)
+// ---------------------------------------------------------------------------
+// Pedido do Fábio: sem aviso, um toque sem querer no "Remover" apaga tudo o
+// que foi digitado. O comportamento de ponta a ponta (clicar não apaga,
+// Cancelar mantém, confirmar apaga) está provado em
+// ferramentas/provar_confirmar_remover.js -- aqui é só a estrutura.
+console.log("\n--- remover máquina/equipamento pede confirmação (18/09) ---\n");
+
+[
+  { nome: "Padrão (eq-pair)", acao: "rm-eq", array: "equipamentos" },
+  { nome: "Hora Máquina", acao: "rm-maquina", array: "maquinas" },
+  { nome: "Máquinas Detalhado", acao: "rm-maquina-detalhada", array: "maquinas" }
+].forEach(function (t) {
+  // Corta do início do handler (pelo data-action) até o próximo handler --
+  // não há uma função nomeada aqui pra usar corpoDaFuncao, então isola pelo
+  // querySelectorAll seguinte, que é sempre o próximo bloco de fiação.
+  const iniHandler = htmlCompleto.indexOf('[data-action="' + t.acao + '"]');
+  const proximoBloco = htmlCompleto.indexOf("document.querySelectorAll(", iniHandler + 10);
+  const fonteHandler = htmlCompleto.slice(iniHandler, proximoBloco === -1 ? iniHandler + 600 : proximoBloco);
+
+  checar(t.nome + ": clicar Remover chama showConfirm, não apaga direto",
+    new RegExp("showConfirm\\(").test(fonteHandler),
+    "sem showConfirm, um toque sem querer apaga " + t.array + " na hora");
+
+  checar(t.nome + ": o splice() mora DENTRO do callback de confirmação (só roda se confirmar)",
+    new RegExp("showConfirm\\([^;]*function\\(\\)\\{\\s*a\\." + t.array + "\\.splice\\(idx,1\\); render\\(\\);\\s*\\}\\)").test(fonteHandler),
+    "se o splice estiver fora do callback, o aviso aparece mas apaga do mesmo jeito -- confirmação decorativa");
+
+  checar(t.nome + ": o aviso menciona o que se perde",
+    /perdidos/i.test(fonteHandler),
+    "aviso sem dizer o que está em jogo não ajuda a decidir");
+});
 
 console.log("\nTOTAL DE FALHAS: " + erros);
 console.log(erros === 0 ? "TESTES VERDES" : "TEM FALHA -- leia acima");
