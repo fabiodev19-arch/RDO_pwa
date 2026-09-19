@@ -3101,6 +3101,19 @@
       // mesma MINI CURVA são três linhas com a MESMA descrição. Quando as
       // tarifas são diferentes de verdade, viram apontamentos separados.
       html += '<p class="helper-text" style="margin-top:0">Todas usam a tarifa escolhida acima. Cada máquina tem sua própria hora inicial e final.</p>';
+      // 18/09 -- achado pelo Fábio: a máquina QUE O PAINEL APONTOU (a única
+      // que fica destravada, acima) mantinha o botão "Remover máquina" --
+      // apagar justamente a produção sob correção tem o mesmo efeito prático
+      // de apagar o apontamento devolvido inteiro, que já não é permitido.
+      // E sem uuid apontado (devolução do apontamento inteiro, sem citar
+      // máquina) NADA travava antes desta linha -- todas ficavam removíveis.
+      // Corrigir é o único caminho enquanto durar a devolução; se a produção
+      // não deveria existir, quem decide isso é o revisor, não um apagar
+      // silencioso no aparelho.
+      if (devolucao){
+        html += '<p class="helper-text">Este apontamento está em correção -- nenhuma produção pode ser removida '+
+          'aqui enquanto isso, só corrigida e reenviada. Se ela não deveria existir, avise quem está revisando.</p>';
+      }
       (a.maquinas||[]).forEach(function(m, idx){
         var travada = maquinaTravada(m);
         if (travada){
@@ -3136,7 +3149,7 @@
             rotulado("Hora final",
               '<input type="text" inputmode="decimal" class="campo-numerico" placeholder="'+phDinamico(r?r.cliente:"",a.tipo_atividade,"hora_final","Hora final")+'" data-maqidx="'+idx+'" data-campo="hora_final" value="'+escAttr(m.hora_final==null?"":formatarNumeroExibicao(m.hora_final))+'">')+
           '</div>'+
-          '<button class="rm-maquina" data-maqidx="'+idx+'" data-action="rm-maquina">'+closeXIcon()+' Remover máquina</button>'+
+          (devolucao ? '' : '<button class="rm-maquina" data-maqidx="'+idx+'" data-action="rm-maquina">'+closeXIcon()+' Remover máquina</button>')+
         '</div>';
       });
       // 18/09 -- achado pelo Fábio testando: adicionar uma máquina NOVA
@@ -3167,6 +3180,14 @@
       html += '<div class="section-title">Equipamentos Utilizados</div>';
       // Aqui também a descrição saiu do card: é uma só, do apontamento.
       html += '<p class="helper-text" style="margin-top:0">Todos usam a tarifa escolhida acima, cada um com sua própria produção. Pode repetir o mesmo código com dados diferentes.</p>';
+      // 18/09 -- mesmo motivo do Hora Máquina logo acima: o equipamento
+      // apontado pelo painel (o único destravado) mantinha "Remover", e sem
+      // uuid apontado nenhum equipamento travava. Ver o comentário completo
+      // no bloco irmão.
+      if (devolucao){
+        html += '<p class="helper-text">Este apontamento está em correção -- nenhuma produção pode ser removida '+
+          'aqui enquanto isso, só corrigida e reenviada. Se ela não deveria existir, avise quem está revisando.</p>';
+      }
       (a.maquinas||[]).forEach(function(m, idx){
         var travadaMd = maquinaTravada(m);
         if (travadaMd){
@@ -3232,7 +3253,7 @@
           '</div>'+
           rotulado(phDinamico(clienteAtual,a.tipo_atividade,"observacao","Observação"),
             '<textarea class="campo-solo campo-texto-solo" data-mdidx="'+idx+'" data-campo="observacao">'+esc(m.observacao||"")+'</textarea>')+
-          '<button class="rm-maquina" data-mdidx="'+idx+'" data-action="rm-maquina-detalhada">'+closeXIcon()+' Remover</button>'+
+          (devolucao ? '' : '<button class="rm-maquina" data-mdidx="'+idx+'" data-action="rm-maquina-detalhada">'+closeXIcon()+' Remover</button>')+
         '</div>';
       });
       // Mesmo motivo do Hora Máquina logo acima: não deixar adicionar

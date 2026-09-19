@@ -1662,6 +1662,26 @@ function trechoAte(fonte, inicioTxt, fimTxt) {
     "botão sumindo sem explicação parece bug, não regra");
 });
 
+// 18/09 -- achado pelo Fábio revisando esta mesma trava: a máquina QUE O
+// PAINEL APONTOU (a única destravada, acima) mantinha "Remover máquina" --
+// apagar justamente a produção sob correção tem o mesmo efeito prático de
+// apagar o apontamento devolvido inteiro, que já não é permitido (ver
+// avisoApontamentoTravado mais abaixo). E sem uuid apontado (devolução do
+// apontamento inteiro, sem citar máquina) NADA travava antes desta mudança
+// -- ou seja, NENHUMA máquina tinha o botão escondido, não só a apontada.
+[
+  { nome: "Hora Máquina Trabalhada", bloco: blocoHM },
+  { nome: "Máquinas Detalhado", bloco: blocoMD }
+].forEach(function (t) {
+  checar(t.nome + ": o botão Remover some (inclusive na máquina apontada) enquanto a atividade está devolvida",
+    /\(devolucao\s*\?\s*''\s*:\s*'<button class="rm-maquina"/.test(t.bloco),
+    "sem essa condição, a produção sob correção continua removível -- mesmo furo que já fechamos na atividade inteira");
+
+  checar(t.nome + ": existe aviso explicando que produção não pode ser removida durante a correção",
+    /if\s*\(devolucao\)\{[\s\S]{0,300}?nenhuma produção pode ser removida[\s\S]{0,250}?avise quem está revisando/.test(t.bloco),
+    "botão sumindo sem explicação parece bug, não regra");
+});
+
 // O formulário Padrão (obra) é o caso em que a trava não precisa fazer nada:
 // há uma produção só por atividade, e a devolução dela sempre chega com
 // maquina_uuid nulo (Painel/index.html: producoes.length===1 -> devolucaoSimples
