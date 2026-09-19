@@ -2459,7 +2459,14 @@
         // A checagem é por atividade (enviadaEm), NÃO por relatorioJaEnviado():
         // reabrir o RDO volta o status para rascunho, e a trava sumiria bem no
         // momento em que ele está aberto para corrigir uma devolução.
-        if (ativ && atividadeJaEnviada(ativ) && !atividadeFoiDevolvida(r, ativ.id)){
+        //
+        // Devolvido também trava (18/09, decisão do Fábio) -- ao contrário da
+        // edição, que a devolução libera de propósito. Antes, devolvido escapava
+        // desta checagem e o operador conseguia apagar o apontamento inteiro; o
+        // servidor então marcava a atividade como excluída sem que o painel
+        // tivesse pedido isso, e a produção que motivou a devolução sumia sem
+        // deixar rastro de quem removeu ou por quê.
+        if (ativ && atividadeJaEnviada(ativ)){
           var avisoRemocao = avisoApontamentoTravado(ativ, "removido");
           showInfo(avisoRemocao.titulo, avisoRemocao.texto);
           return;
@@ -2650,10 +2657,31 @@
   // conforme o dado precisa ser escrita inteira em cada caso, não remendada.
   function avisoApontamentoTravado(a, acao){
     // acao: "alterado" | "removido"
-    var oQueFazer = acao === "removido"
-      ? "Se ele não deveria existir, peça a devolução"
-      : "Se algo está errado nele, peça a devolução";
+    //
+    // "removido" tem texto próprio, não o mesmo molde do "alterado": devolver
+    // não destrava mais a remoção (18/09), então "peça a devolução" seria uma
+    // instrução que engana -- o operador pediria, o painel devolveria, e o
+    // apontamento continuaria impossível de remover por aqui.
+    if (acao === "removido"){
+      if (a && a.numero != null){
+        return {
+          titulo: "Apontamento #" + a.numero + " já subiu",
+          texto: "Este apontamento já subiu para revisão e não pode ser removido aqui. " +
+                 "Devolvido ou não, o aplicativo não remove um apontamento que já subiu — " +
+                 "se o #" + a.numero + " não deveria existir, avise quem está revisando."
+        };
+      }
+      // Apontamento de antes de 09/09 pode não ter número: o tipo é o que sobra.
+      return {
+        titulo: "Apontamento já subiu",
+        texto: "Este apontamento já subiu para revisão e não pode ser removido aqui. " +
+               "Devolvido ou não, o aplicativo não remove um apontamento que já subiu" +
+               (a && a.tipo_atividade ? ' — se "' + a.tipo_atividade + '" não deveria existir' : " -- se ele não deveria existir") +
+               ", avise quem está revisando."
+      };
+    }
 
+    var oQueFazer = "Se algo está errado nele, peça a devolução";
     if (a && a.numero != null){
       return {
         titulo: "Apontamento #" + a.numero + " já subiu",

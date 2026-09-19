@@ -220,9 +220,31 @@ checar("bloqueia reabrir relatório já enviado sem devolução",
 // A checagem mudou de relatorioJaEnviado() para atividadeJaEnviada() em 08/09,
 // depois que o Fábio achou o furo do "reabri, logo posso apagar" -- ver a
 // seção no fim deste arquivo. O teste acompanha a correção.
-checar("bloqueia remover apontamento já enviado sem devolução",
-  /del-ativ[\s\S]{0,900}atividadeJaEnviada\(ativ\)\s*&&\s*!atividadeFoiDevolvida\(/.test(htmlCompleto),
+//
+// Extrai o CORPO do handler em vez de medir distância em caracteres -- a
+// mesma armadilha que o comentário da migração retroativa descreve mais
+// abaixo ("Distância em caracteres é frágil") quase se repetiu aqui: o
+// comentário explicando a trava de devolvido (18/09), sozinho, já passa dos
+// 900 caracteres usados nos testes antigos deste bloco.
+const corpoDelAtiv = extrairFuncao(
+  'document.querySelectorAll(\'[data-action="del-ativ"]\').forEach(function(btn){',
+  'showConfirm("Remover atividade?"'
+);
+
+checar("bloqueia remover apontamento já enviado",
+  /atividadeJaEnviada\(ativ\)/.test(corpoDelAtiv),
   "o botão de remover não checa se o apontamento já foi enviado");
+
+// A partir de 18/09 o remover deixou de abrir exceção para devolvido --
+// decisão do Fábio: "apagar um apontamento devolvido não pode ser permitido
+// dentro do pwa". Antes, devolver escapava desta trava e o operador
+// conseguia apagar o apontamento inteiro; o servidor marcava a exclusão sem
+// o painel ter pedido, e a produção que motivou a devolução sumia sem
+// rastro de quem removeu. A edição continua liberada por devolução -- é o
+// caminho de correção; só o remover fechou.
+checar("remover NÃO abre exceção para devolvido (decisão de 18/09)",
+  !/atividadeFoiDevolvida/.test(corpoDelAtiv),
+  "o remover voltou a liberar devolvido -- a decisão de 18/09 foi desfeita");
 
 checar("relatório com devolução PODE ser reaberto (senão a correção fica impossível)",
   /function relatorioTemDevolucao\(r\)[\s\S]{0,400}relatorio_uuid_dispositivo === r\.id/.test(htmlCompleto),
@@ -257,11 +279,11 @@ checar("avisa o operador quando o servidor ignora alterações",
 console.log("\n--- exclusão depois de reabrir (furo de 08/09) ---\n");
 
 checar("a trava de exclusão NÃO depende de relatorioJaEnviado (some ao reabrir)",
-  !/del-ativ[\s\S]{0,900}relatorioJaEnviado\(r\)\s*&&\s*!atividadeFoiDevolvida/.test(htmlCompleto),
+  !/relatorioJaEnviado\(r\)/.test(corpoDelAtiv),
   "voltou a usar relatorioJaEnviado: reabrir destrava a exclusão de novo");
 
 checar("exclusão checa a marca da própria atividade (enviadaEm)",
-  /del-ativ[\s\S]{0,900}atividadeJaEnviada\(ativ\)\s*&&\s*!atividadeFoiDevolvida\(/.test(htmlCompleto),
+  /atividadeJaEnviada\(ativ\)/.test(corpoDelAtiv),
   "o botão de remover não usa atividadeJaEnviada");
 
 checar("edição checa a mesma marca (senão reabrir destrava alterar)",
@@ -366,6 +388,23 @@ checar("sem dado nenhum: frase continua inteira e sem lacuna",
   av.texto.indexOf("  ") === -1 && av.texto.indexOf(" ,") === -1 &&
   av.texto.indexOf("alterado") !== -1,
   JSON.stringify(av));
+
+// 18/09: devolver deixou de destravar a remoção (decisão do Fábio). A
+// mensagem de "removido" não pode mais sugerir "peça a devolução" -- quem
+// seguisse essa instrução pediria, o painel devolveria, e o apontamento
+// continuaria impossível de remover por aqui. A de "alterado" continua
+// orientando a devolução, porque para editar ela SEGUE sendo o caminho.
+checar("'removido' não promete que devolver destrava a remoção",
+  avisoDe({ numero: 12 }, "removido").texto.indexOf("peça a devolução") === -1,
+  "a mensagem de remover ainda sugere pedir devolução -- a decisão de 18/09 foi desfeita");
+
+checar("'removido' avisa que a trava vale para devolvido ou não",
+  /devolvido ou não/i.test(avisoDe({ numero: 12 }, "removido").texto),
+  "a mensagem de remover não deixa claro que devolvido também está travado");
+
+checar("'alterado' continua orientando pedir devolução (ela segue liberando a edição)",
+  avisoDe({ numero: 12 }, "alterado").texto.indexOf("peça a devolução") !== -1,
+  "a mensagem de editar parou de orientar a devolução -- ela continua sendo o caminho de correção");
 
 checar("os dois bloqueios de apontamento usam o helper",
   (htmlCompleto.match(/avisoApontamentoTravado\((ativ|ativCard), /g) || []).length === 2,

@@ -114,6 +114,11 @@ BEGIN
     'atividades.producao_devolvida_indice',
     'atividades.producao_devolvida_maquina_uuid',
     'atividade_maquinas.uuid_maquina_dispositivo',
+    -- 18/09: mesma marcação que atividades já tem -- produção removida vira
+    -- MARCA, não DELETE literal (ver a seção C, "proteção contra perda de
+    -- evidência").
+    'atividade_maquinas.excluido_em',
+    'atividade_maquinas.excluido_por',
     'relatorios.criado_por'
   ]
   LOOP
@@ -167,6 +172,17 @@ SELECT pg_temp.checar('A', 'atividade_maquinas.uuid_maquina_dispositivo é NOT N
 
 SELECT pg_temp.checar('A', 'nenhuma máquina sem uuid_maquina_dispositivo',
   NOT EXISTS (SELECT 1 FROM atividade_maquinas WHERE uuid_maquina_dispositivo IS NULL));
+
+-- 18/09: NULLABLE de propósito -- máquina nunca removida tem excluido_em/por
+-- nulos, e isso é o estado NORMAL (a maioria das máquinas nunca é removida).
+SELECT pg_temp.checar('A', 'atividade_maquinas.excluido_em é NULLABLE',
+  (SELECT is_nullable FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='atividade_maquinas' AND column_name='excluido_em') = 'YES',
+  'NOT NULL aqui quebraria toda máquina que nunca foi removida');
+
+SELECT pg_temp.checar('A', 'atividade_maquinas.excluido_por é NULLABLE',
+  (SELECT is_nullable FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='atividade_maquinas' AND column_name='excluido_por') = 'YES');
 
 -- É o que faz o upsert (ON CONFLICT) da sincronização funcionar.
 SELECT pg_temp.checar('A', 'UNIQUE (atividade_id, uuid_maquina_dispositivo) existe',
@@ -366,10 +382,10 @@ DECLARE
   v_qtd       int;
   v_corte     boolean;
   v_pq        text;
-  v_excluido_em   timestamptz;
   v_payload_cheio jsonb;
   v_qtd_antes_medida numeric;
   v_numero_inicial   bigint;
+  v_resp_c10      jsonb;
 BEGIN
   -- criado_por tem FK pra auth.users, então precisamos de um usuário real.
   -- Não criamos um (mexer em auth.users é outro departamento) -- pegamos o
@@ -697,52 +713,47 @@ BEGIN
     PERFORM pg_temp.checar('C', 'devolver uma atividade validada continua permitido', false, SQLERRM);
   END;
 
-  -- C10 -- atividade removida no aparelho é MARCADA, não apagada
+  -- C10 -- apagar uma atividade DEVOLVIDA deixou de ser honrado (18/09)
   --
-  -- Este teste já afirmou o contrário ("é removida do banco"). Mudou porque o
-  -- comportamento mudou de propósito, em 08/09: apagar de verdade deixava o
-  -- operador sumir com um apontamento devolvido ou já validado, sem rastro
-  -- nenhum -- nem o motivo da devolução, nem as fotos de evidência.
-  -- Ver exclusao_marcada_atividade.sql.
+  -- Este teste já afirmou duas coisas diferentes: "é apagada do banco" (até
+  -- 08/09) e depois "fica marcada com excluido_em, não apagada" (08/09 a
+  -- 18/09). Mudou de novo, agora por pedido do Fábio: mesmo marcada, uma
+  -- exclusão escondia que a produção questionada tinha sido DESCARTADA em
+  -- vez de CORRIGIDA -- o `status_revisao` e o motivo sumiam junto. O
+  -- caminho certo agora é só editar e reenviar; omitir do payload uma
+  -- atividade devolvida simplesmente não é mais honrado -- ela continua
+  -- EXATAMENTE como estava. Ver protecao_exclusao_devolucao.sql.
   v_payload := jsonb_set(v_payload, '{atividades}', '[]'::jsonb);
-  PERFORM sincronizar_relatorio_rdo(v_payload);
+  v_resp_c10 := sincronizar_relatorio_rdo(v_payload);
 
-  PERFORM pg_temp.checar('C', 'atividade removida no aparelho NÃO é apagada do banco',
-    EXISTS (SELECT 1 FROM atividades WHERE id = v_ativ_id));
-  PERFORM pg_temp.checar('C', 'atividade removida fica marcada com excluido_em',
-    (SELECT excluido_em IS NOT NULL FROM atividades WHERE id = v_ativ_id));
-  PERFORM pg_temp.checar('C', 'a remoção registra quem sincronizou',
-    (SELECT excluido_por = v_uid FROM atividades WHERE id = v_ativ_id));
+  PERFORM pg_temp.checar('C', 'omitir uma atividade devolvida NÃO a remove nem marca -- continua devolvida, intacta',
+    EXISTS (SELECT 1 FROM atividades WHERE id = v_ativ_id AND excluido_em IS NULL AND status_revisao = 'devolvido'));
   PERFORM pg_temp.checar('C', 'o relatório em si continua lá',
     EXISTS (SELECT 1 FROM relatorios WHERE id = v_rel_id));
-  PERFORM pg_temp.checar('C', 'PWA não cobra correção de atividade que o operador removeu',
-    NOT (verificar_atividades_devolvidas() @>
-         jsonb_build_array(jsonb_build_object('atividade_id', v_ativ_uuid))));
-  -- O que mais importa nesta mudança: a evidência não se perde. Antes, apagar
-  -- a atividade levava as fotos junto, e o arquivo no Storage ficava órfão sem
-  -- nada apontando pra ele -- perda de dado sem volta.
-  PERFORM pg_temp.checar('C', 'as fotos da atividade removida sobrevivem',
+  PERFORM pg_temp.checar('C', 'PWA continua cobrando a correção (a devolução não sumiu com a tentativa)',
+    verificar_atividades_devolvidas() @>
+         jsonb_build_array(jsonb_build_object('atividade_id', v_ativ_uuid)));
+  -- O que mais importa nesta regra: nada se perde, porque a tentativa de
+  -- remoção nem chega a ter efeito -- diferente da marcação (08/09), que já
+  -- preservava mas mudava o status.
+  PERFORM pg_temp.checar('C', 'as fotos continuam lá (nada foi removido de verdade)',
     EXISTS (SELECT 1 FROM evidencias_fotos WHERE atividade_id = v_ativ_id));
-  PERFORM pg_temp.checar('C', 'o motivo da devolução sobrevive à remoção',
-    (SELECT motivo_devolucao IS NOT NULL OR status_revisao <> 'devolvido'
-       FROM atividades WHERE id = v_ativ_id));
-  PERFORM pg_temp.checar('C', 'painel enxerga a atividade removida',
+  PERFORM pg_temp.checar('C', 'o motivo da devolução continua lá, sem mudar',
+    (SELECT motivo_devolucao IS NOT NULL FROM atividades WHERE id = v_ativ_id));
+  PERFORM pg_temp.checar('C', 'painel continua vendo a atividade como devolvida, não como removida',
     EXISTS (
       SELECT 1 FROM jsonb_array_elements(listar_relatorios_painel(NULL,NULL,NULL,NULL,100)) rel,
                     jsonb_array_elements(rel->'atividades') ativ
-       WHERE (rel->>'id')::uuid = v_rel_id AND ativ->>'excluido_em' IS NOT NULL));
+       WHERE (rel->>'id')::uuid = v_rel_id AND (ativ->>'id')::uuid = v_ativ_id
+         AND ativ->>'excluido_em' IS NULL AND ativ->>'status_revisao' = 'devolvido'));
+  PERFORM pg_temp.checar('C', 'a tentativa de omitir é contabilizada em remocoes_negadas',
+    (v_resp_c10->>'remocoes_negadas')::int >= 1, coalesce(v_resp_c10->>'remocoes_negadas', 'NULL'));
 
-  -- Sincronizar de novo não pode reescrever a data da remoção, senão o painel
-  -- passa a dizer "removido agora" para algo removido semana passada.
-  SELECT excluido_em INTO v_excluido_em FROM atividades WHERE id = v_ativ_id;
-  PERFORM sincronizar_relatorio_rdo(v_payload);
-  PERFORM pg_temp.checar('C', 'nova sincronização não reescreve a data da remoção',
-    (SELECT excluido_em = v_excluido_em FROM atividades WHERE id = v_ativ_id));
-
-  -- E se o operador se arrepender e recriar o apontamento, a marca some.
+  -- Reenviar com a atividade de volta (payload completo) segue o caminho
+  -- normal de correção -- devolvido volta a pendente, como sempre.
   PERFORM sincronizar_relatorio_rdo(v_payload_cheio);
-  PERFORM pg_temp.checar('C', 'recriar a atividade no aparelho limpa a marca de remoção',
-    (SELECT excluido_em IS NULL AND excluido_por IS NULL FROM atividades WHERE id = v_ativ_id));
+  PERFORM pg_temp.checar('C', 'reenviar com a atividade de volta corrige normalmente (volta a pendente)',
+    (SELECT status_revisao = 'pendente' AND excluido_em IS NULL FROM atividades WHERE id = v_ativ_id));
 
   -- C11 -- inscrição de push
   PERFORM salvar_push_subscription('https://exemplo.invalido/push-teste', 'p256-a', 'auth-a');
@@ -1360,8 +1371,12 @@ BEGIN
   PERFORM pg_temp.checar('C', 'upsert preserva o id real da máquina que não mudou',
     v_id_maq2 IS NOT NULL AND v_id_maq2 = v_id_maq1,
     'id antes=' || coalesce(v_id_maq1::text,'NULL') || ' id depois=' || coalesce(v_id_maq2::text,'NULL'));
-  PERFORM pg_temp.checar('C', 'a máquina removida no aparelho some do banco',
-    NOT EXISTS (SELECT 1 FROM atividade_maquinas WHERE atividade_id = v_aid AND uuid_maquina_dispositivo = v_muid_b));
+  -- 18/09: deixou de ser DELETE literal -- a máquina removida no aparelho
+  -- agora é MARCADA (excluido_em), não apagada. Ver protecao_exclusao_devolucao.sql
+  -- e a seção C dedicada ("proteção contra perda de evidência numa devolução").
+  PERFORM pg_temp.checar('C', 'a máquina removida no aparelho é marcada, não apagada do banco',
+    EXISTS (SELECT 1 FROM atividade_maquinas
+             WHERE atividade_id = v_aid AND uuid_maquina_dispositivo = v_muid_b AND excluido_em IS NOT NULL));
 
   -- --- REGRESSÃO do overload de 2 parâmetros: continua no ar, mesmo sem uso ---
   PERFORM set_config('request.jwt.claims',
@@ -1540,17 +1555,20 @@ BEGIN
   );
   PERFORM sincronizar_relatorio_rdo(v_payload);
 
-  -- Pra ficar excluível de verdade (regra do projeto: só sai do payload quem
-  -- já está 'devolvido'), devolve a segunda antes de omiti-la.
+  -- 18/09: omitir uma atividade devolvida do payload deixou de marcar
+  -- excluido_em (ver protecao_exclusao_devolucao.sql) -- não existe mais
+  -- caminho normal que produza uma atividade excluída a partir daqui. Para
+  -- este teste especificamente (reconstrução não pode ressuscitar dado
+  -- excluído), simula-se uma exclusão HISTÓRICA -- de antes desta mudança
+  -- de regra -- com um UPDATE direto, e confirma que a reconstrução
+  -- continua respeitando esse registro antigo.
+  -- status_revisao = 'devolvido' junto: é o invariante que SEMPRE valeu até
+  -- esta mudança (só se excluía omitindo uma atividade devolvida) -- a
+  -- seção D tem um teste dedicado que cobra justamente isso, e a simulação
+  -- precisa respeitar o mesmo formato do dado real que existia antes.
   SELECT id INTO v_ativ_excluida_id FROM atividades WHERE uuid_atividade_dispositivo = v_ativ_excluida_uuid;
-  PERFORM set_config('request.jwt.claims',
-    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
-  PERFORM devolver_atividade_rdo(v_ativ_excluida_id, 'motivo de teste', NULL::uuid);
-  PERFORM set_config('request.jwt.claims',
-    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
-
-  v_payload := jsonb_set(v_payload, '{atividades}', jsonb_build_array(v_payload->'atividades'->0));
-  PERFORM sincronizar_relatorio_rdo(v_payload);
+  UPDATE atividades SET excluido_em = now(), excluido_por = v_uid, status_revisao = 'devolvido'
+   WHERE id = v_ativ_excluida_id;
 
   SELECT listar_meus_relatorios_pwa() INTO v_resultado;
   SELECT r INTO v_rel_out FROM jsonb_array_elements(v_resultado) r WHERE (r->>'id')::uuid = v_rel_uuid;
@@ -1602,6 +1620,176 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   PERFORM pg_temp.checar('C', 'reconstrução local a partir do servidor', false, SQLERRM);
 END $secao_c_reconstrucao$;
+
+-- ----------------------------------------------------------------------------
+-- Proteção contra perda de evidência numa devolução (18/09): produção
+-- removida vira MARCA (não DELETE), e apagar um apontamento devolvido por
+-- omissão no payload deixa de ser honrado pelo servidor.
+-- ----------------------------------------------------------------------------
+DO $secao_c_protecao$
+DECLARE
+  v_uid uuid;
+  v_rel_uuid uuid := gen_random_uuid();
+  v_ativ_uuid uuid := gen_random_uuid();
+  v_ativ3_uuid uuid := gen_random_uuid();
+  v_muid_a uuid := gen_random_uuid();
+  v_muid_b uuid := gen_random_uuid();
+  v_payload jsonb;
+  v_payload_final jsonb;
+  v_rel_id uuid;
+  v_ativ_id uuid;
+  v_ativ3_id uuid;
+  v_resultado jsonb;
+  v_prod jsonb;
+  v_st text;
+  v_excl timestamptz;
+  v_resp jsonb;
+BEGIN
+  SELECT id INTO v_uid FROM auth.users ORDER BY created_at LIMIT 1;
+  IF v_uid IS NULL THEN
+    PERFORM pg_temp.pular('C', 'proteção contra perda de evidência numa devolução', 'auth.users vazia');
+    RETURN;
+  END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+
+  v_payload := jsonb_build_object(
+    'uuid_dispositivo', v_rel_uuid,
+    'cliente', 'Colheita', 'contrato', 'ARAUCO', 'faena', 'TESTE PROTECAO',
+    'tipo_estrada', 'Acesso', 'equipe_frente', 'GTM - Teste',
+    'fazenda', 'Elo Dourado 2', 'data', '2026-09-18',
+    'encarregado', 'Elson', 'supervisor', 'Valmir',
+    'tecnico_arauco', 'Edwilson', 'supervisor_arauco', 'Luciano',
+    'atividades', jsonb_build_array(
+      jsonb_build_object('id', v_ativ_uuid, 'tipo_atividade', 'PÁ CARREGADEIRA - HT',
+        'maquinas', jsonb_build_array(
+          jsonb_build_object('id', v_muid_a, 'equipamento', 'PC-19', 'operador', 'RICARDO',
+            'dados', jsonb_build_object('hora_inicial', 7, 'hora_final', 12)),
+          jsonb_build_object('id', v_muid_b, 'equipamento', 'MN-16', 'operador', 'SILVANEI',
+            'dados', jsonb_build_object('hora_inicial', 8, 'hora_final', 16))
+        ))
+    )
+  );
+  PERFORM sincronizar_relatorio_rdo(v_payload);
+  SELECT id INTO v_rel_id FROM relatorios WHERE uuid_dispositivo = v_rel_uuid;
+  SELECT id INTO v_ativ_id FROM atividades WHERE relatorio_id = v_rel_id AND uuid_atividade_dispositivo = v_ativ_uuid;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+  PERFORM devolver_atividade_rdo(p_atividade_id => v_ativ_id, p_motivo => 'teste', p_maquina_uuid => v_muid_a);
+
+  -- Reenvio omitindo a máquina A -- ela é MARCADA, não apagada de verdade.
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+  v_payload := jsonb_set(v_payload, '{atividades,0,maquinas}', jsonb_build_array(v_payload->'atividades'->0->'maquinas'->1));
+  PERFORM sincronizar_relatorio_rdo(v_payload);
+
+  PERFORM pg_temp.checar('C', 'produção removida continua existindo no banco (marcada, não apagada)',
+    EXISTS (SELECT 1 FROM atividade_maquinas WHERE atividade_id = v_ativ_id AND uuid_maquina_dispositivo = v_muid_a));
+  SELECT excluido_em INTO v_excl FROM atividade_maquinas WHERE atividade_id = v_ativ_id AND uuid_maquina_dispositivo = v_muid_a;
+  PERFORM pg_temp.checar('C', 'produção removida tem excluido_em preenchido', v_excl IS NOT NULL);
+
+  SELECT status_revisao INTO v_st FROM atividades WHERE id = v_ativ_id;
+  PERFORM pg_temp.checar('C', 'reenvio de correção continua funcionando (atividade volta a pendente)',
+    v_st = 'pendente', 'status = ' || coalesce(v_st, 'NULL'));
+
+  -- Devolver apontando pra uma produção já removida é recusado.
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+  BEGIN
+    PERFORM devolver_atividade_rdo(p_atividade_id => v_ativ_id, p_motivo => 'teste',
+      p_maquina_uuid => v_muid_a);
+    PERFORM pg_temp.checar('C', 'devolver uma produção já removida é recusado', false, 'a chamada passou');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM pg_temp.checar('C', 'devolver uma produção já removida é recusado',
+      SQLERRM LIKE '%já foi removida%', SQLERRM);
+  END;
+
+  -- O painel vê a produção removida (com excluido_em), não some da lista.
+  SELECT listar_relatorios_painel(NULL,NULL,NULL,NULL,200) INTO v_resultado;
+  SELECT p INTO v_prod
+    FROM jsonb_array_elements(v_resultado) rel,
+         jsonb_array_elements(rel->'atividades') ativ,
+         jsonb_array_elements(ativ->'producoes') p
+   WHERE (rel->>'id')::uuid = v_rel_id AND (ativ->>'id')::uuid = v_ativ_id
+     AND p->>'maquina_uuid' = v_muid_a::text;
+  PERFORM pg_temp.checar('C', 'painel enxerga a produção removida (não some da lista)', v_prod IS NOT NULL);
+  PERFORM pg_temp.checar('C', 'a produção removida vem com excluido_em preenchido para o painel',
+    v_prod IS NOT NULL AND v_prod->>'excluido_em' IS NOT NULL);
+
+  SELECT p INTO v_prod
+    FROM jsonb_array_elements(v_resultado) rel,
+         jsonb_array_elements(rel->'atividades') ativ,
+         jsonb_array_elements(ativ->'producoes') p
+   WHERE (rel->>'id')::uuid = v_rel_id AND (ativ->>'id')::uuid = v_ativ_id
+     AND p->>'maquina_uuid' = v_muid_b::text;
+  PERFORM pg_temp.checar('C', 'produção NÃO removida continua sem excluido_em',
+    v_prod IS NOT NULL AND v_prod->>'excluido_em' IS NULL);
+
+  -- Reconstrução (PWA) não ressuscita a produção removida.
+  SELECT listar_meus_relatorios_pwa() INTO v_resultado;
+  PERFORM pg_temp.checar('C', 'reconstrução NÃO ressuscita a produção removida',
+    NOT EXISTS (
+      SELECT 1 FROM jsonb_array_elements(v_resultado) r,
+                    jsonb_array_elements(r->'atividades') a,
+                    jsonb_array_elements(a->'maquinas') m
+       WHERE (r->>'id')::uuid = v_rel_uuid AND m->>'id' = v_muid_a::text
+    ));
+
+  -- Reenviar a MESMA máquina de novo limpa a marca de exclusão.
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+  PERFORM devolver_atividade_rdo(p_atividade_id => v_ativ_id, p_motivo => 'de novo', p_maquina_uuid => NULL::uuid);
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+  v_payload := jsonb_set(v_payload, '{atividades,0,maquinas}',
+    jsonb_build_array(v_payload->'atividades'->0->'maquinas'->0,
+      jsonb_build_object('id', v_muid_a, 'equipamento', 'PC-19', 'operador', 'RICARDO',
+        'dados', jsonb_build_object('hora_inicial', 7, 'hora_final', 12))));
+  PERFORM sincronizar_relatorio_rdo(v_payload);
+  SELECT excluido_em INTO v_excl FROM atividade_maquinas WHERE atividade_id = v_ativ_id AND uuid_maquina_dispositivo = v_muid_a;
+  PERFORM pg_temp.checar('C', 'recriar a mesma produção no aparelho limpa a marca de exclusão', v_excl IS NULL);
+
+  -- Apagar um APONTAMENTO devolvido (omitir do payload) deixou de ser
+  -- honrado -- atividade isolada, devolvida uma única vez, sem nenhum
+  -- reenvio de correção no meio (que já desfaria o devolvido por outro
+  -- caminho e confundiria o que este teste quer provar).
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+  v_payload_final := jsonb_build_object(
+    'uuid_dispositivo', v_rel_uuid,
+    'cliente', 'Colheita', 'contrato', 'ARAUCO', 'faena', 'TESTE PROTECAO',
+    'tipo_estrada', 'Acesso', 'equipe_frente', 'GTM - Teste',
+    'fazenda', 'Elo Dourado 2', 'data', '2026-09-18',
+    'encarregado', 'Elson', 'supervisor', 'Valmir',
+    'tecnico_arauco', 'Edwilson', 'supervisor_arauco', 'Luciano',
+    'atividades', jsonb_build_array(jsonb_build_object('id', v_ativ3_uuid, 'tipo_atividade', 'TESTE ATIVIDADE 3'))
+  );
+  PERFORM sincronizar_relatorio_rdo(v_payload_final);
+  SELECT id INTO v_ativ3_id FROM atividades WHERE relatorio_id = v_rel_id AND uuid_atividade_dispositivo = v_ativ3_uuid;
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+  PERFORM devolver_atividade_rdo(p_atividade_id => v_ativ3_id, p_motivo => 'teste', p_maquina_uuid => NULL::uuid);
+
+  PERFORM set_config('request.jwt.claims',
+    jsonb_build_object('sub', v_uid, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+  v_payload_final := jsonb_set(v_payload_final, '{atividades}', '[]'::jsonb);
+  v_resp := sincronizar_relatorio_rdo(v_payload_final);
+
+  SELECT excluido_em, status_revisao INTO v_excl, v_st FROM atividades WHERE id = v_ativ3_id;
+  PERFORM pg_temp.checar('C', 'omitir um apontamento DEVOLVIDO não marca mais excluido_em',
+    v_excl IS NULL);
+  PERFORM pg_temp.checar('C', 'e ele continua devolvido, intacto (não vira pendente nem some)',
+    v_st = 'devolvido', 'status = ' || coalesce(v_st, 'NULL'));
+  PERFORM pg_temp.checar('C', 'a tentativa de omitir é contabilizada em remocoes_negadas',
+    (v_resp->>'remocoes_negadas')::int >= 1, 'veio ' || coalesce(v_resp->>'remocoes_negadas', 'NULL'));
+
+  PERFORM set_config('request.jwt.claims', '', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM pg_temp.checar('C', 'proteção contra perda de evidência numa devolução', false, SQLERRM);
+END $secao_c_protecao$;
 
 -- ============================================================================
 -- SEÇÃO D — regressão: o que já funcionava tem que continuar funcionando
